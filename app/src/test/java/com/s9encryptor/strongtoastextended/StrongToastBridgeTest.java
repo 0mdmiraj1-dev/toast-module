@@ -31,9 +31,20 @@ import org.robolectric.annotation.LooperMode;
 
 /** Receiver authorization configuration and state isolation, with real Android Bundles. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = 33, manifest = Config.NONE)
+@Config(sdk = 33, manifest = Config.NONE, shadows = {StrongToastBridgeTest.RealResultReceiver.class})
 @LooperMode(LooperMode.Mode.PAUSED)
 public final class StrongToastBridgeTest {
+    /** Robolectric's default send shadow discards the Binder in a parcelled receiver. */
+    @org.robolectric.annotation.Implements(ResultReceiver.class)
+    public static class RealResultReceiver {
+        @org.robolectric.annotation.RealObject private ResultReceiver real;
+        @org.robolectric.annotation.Implementation
+        protected void send(int code, Bundle data) {
+            org.robolectric.shadow.api.Shadow.directlyOn(real, ResultReceiver.class, "send",
+                org.robolectric.util.ReflectionHelpers.ClassParameter.from(int.class, code),
+                org.robolectric.util.ReflectionHelpers.ClassParameter.from(Bundle.class, data));
+        }
+    }
     private final BlockingQueue<Bundle> replies = new LinkedBlockingQueue<>();
     private final BlockingQueue<Thread> deliveryThreads = new LinkedBlockingQueue<>();
     private ResultReceiver reply;
@@ -99,7 +110,10 @@ public final class StrongToastBridgeTest {
             outgoing.writeToParcel(parcel, 0);
             parcel.setDataPosition(0);
             Intent delivered = Intent.CREATOR.createFromParcel(parcel);
+            Object decoded = delivered.getParcelableExtra("reply");
+            assertTrue("Decoded private callback: " + decoded, decoded instanceof ResultReceiver);
             context.receiver.onReceive(context, delivered);
+            assertEquals("Receiver error", "", get("lastError"));
             Bundle result = takeReply();
             assertTrue(result.getBoolean("success"));
             assertTrue(result.getBoolean("moduleActive"));
