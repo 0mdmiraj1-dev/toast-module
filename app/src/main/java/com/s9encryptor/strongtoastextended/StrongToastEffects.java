@@ -4,12 +4,13 @@ import android.animation.ObjectAnimator;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.text.TextPaint;
+import android.util.TypedValue;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.text.SpannableString;
-import android.text.TextPaint;
 import android.text.style.CharacterStyle;
 import android.text.style.UpdateAppearance;
 import android.view.View;
@@ -25,6 +26,7 @@ final class StrongToastEffects {
     private static final long TIMER_FRAME_MS = 120L;
     private static final long ALERT_MS = 30_000L;
     private static final int MAX_RAINBOW_SEGMENTS = 90;
+    private static final int FIT_MAX_CODEPOINTS = 26;
     private static Session session;
     private static int nextId = 1;
 
@@ -50,6 +52,7 @@ final class StrongToastEffects {
         s.frame = null;
         s.view = null;
         s.spans = null;
+        s.textFitComplete = false;
     }
 
     static void resume(Object control) {
@@ -61,6 +64,8 @@ final class StrongToastEffects {
         s.spans = null;
         s.previousSeconds = -1;
         s.previousColor = 0;
+        s.textFitComplete = false;
+        s.textFitAttempts = 0;
         schedule(s, 200L);
     }
 
@@ -100,6 +105,8 @@ final class StrongToastEffects {
         int previousSeconds = -1;
         int previousColor;
         boolean paused;
+        boolean textFitComplete;
+        int textFitAttempts;
         boolean alertStarted;
         boolean vibrating;
         Vibrator vibrator;
@@ -161,6 +168,7 @@ final class StrongToastEffects {
             return;
         }
         if ("rgb".equals(s.mode)) {
+            fitShortStyledText(s);
             updateRainbow(s, now);
             schedule(s, RGB_FRAME_MS);
         } else if ("timer".equals(s.mode)) {
@@ -169,10 +177,14 @@ final class StrongToastEffects {
                 schedule(s, 250L);
             } else {
                 drawCountdown(s, s.countdownEnd - now);
+                fitShortStyledText(s);
                 schedule(s, TIMER_FRAME_MS);
             }
         } else {
-            // 'styled': no animation; hook replay calls resume() for new TextView.
+            // Styled mode normally has no animation. Retry fitting until layout
+            // reports a non-zero width; no repeating root calls or view recreation.
+            fitShortStyledText(s);
+            if (!s.textFitComplete && s.textFitAttempts < 15) schedule(s, 200L);
         }
     }
 
@@ -190,6 +202,8 @@ final class StrongToastEffects {
                 s.rainbowFallback = false;
                 s.previousSeconds = -1;
                 s.previousColor = 0;
+                s.textFitComplete = false;
+                s.textFitAttempts = 0;
                 setStyle(view, s.style);
                 if ("rgb".equals(s.mode)) installRainbow(s);
                 XposedBridge.log(TAG + "bound mode=" + s.mode + " style=" + s.style);
@@ -203,6 +217,78 @@ final class StrongToastEffects {
         if ("bold".equals(style)) mode = Typeface.BOLD;
         else if ("italic".equals(style)) mode = Typeface.ITALIC;
         view.setTypeface(view.getTypeface(), mode);
+    }
+
+    /**
+     * Native StrongToast may allocate a narrow TextView even when the status bar
+     * has spare screen space. Bold/italic glyphs are wider than normal glyphs,
+     * so short strings can get truncated with "..". Fit only short styled text.
+     *
+     * Do not widen SystemUI's icon/parent containers: their measurements and
+     * touch regions are ROM-dependent. Do not replace text on every frame.
+     */
+    private static void fitShortStyledText(Session s) {
+        if (s.view == null || s.textFitComplete) return;
+        TextView view = s.view;
+        String content = view.getText().toString();
+        if (content.isEmpty()) return;
+        if ("normal".equals(s.style) || content.indexOf('\n') >= 0 ||
+            content.codePointCount(0, content.length()) > FIT_MAX_CODEPOINTS) {
+            s.textFitComplete = true; // preserve native marquee for long text
+            return;
+        }
+        // The native toast's width can change during its entrance animation.
+        // Wait for a measured layout instead of guessing screen-wide space.
+        int width = view.getWidth();
+        if (width <= 0) {
+            s.textFitAttempts++;
+            if (s.textFitAttempts >= 15) s.textFitComplete = true;
+            return;
+        }
+        float density = view.getResources().getDisplayMetrics().density;
+        float available = width - view.getCompoundPaddingLeft() -
+            view.getCompoundPaddingRight() - (2f * density);
+        if (available <= 0f) {
+            s.textFitComplete = true;
+            return;
+        }
+        TextPaint paint = view.getPaint();
+        float required = paint.measureText(content);
+        if (required <= available) {
+            s.textFitComplete = true;
+            return;
+        }
+        float originalPx = view.getTextSize();
+        Typeface originalFace = view.getTypeface();
+        int styleFlag = "bold".equals(s.style) ? Typeface.BOLD : Typeface.ITALIC;
+        Typeface condensed = Typeface.create("sans-serif-condensed", styleFlag);
+        if (condensed != null) {
+            view.setTypeface(condensed);
+            float condensedWidth = view.getPaint().measureText(content);
+            if (condensedWidth < required) {
+                required = condensedWidth;
+            } else {
+                // Don't swap fonts if the ROM has no narrower condensed face.
+                view.setTypeface(originalFace);
+            }
+        }
+        if (required > available) {
+            // Only scale short labels by a modest amount. If the text would
+            // need to be tiny, leave it to the native marquee instead.
+            float factor = available / required;
+            if (factor >= .78f) {
+                view.setTextSize(TypedValue.COMPLEX_UNIT_PX,
+                    originalPx * factor * .985f);
+            } else {
+                view.setTypeface(originalFace);
+                XposedBridge.log(TAG + "short text exceeds safe fit range; " +
+                    "preserving readable size for marquee");
+            }
+        }
+        s.textFitComplete = true;
+        XposedBridge.log(TAG + "short text fit completed style=" + s.style +
+            " availablePx=" + available + " measuredPx=" + required +
+            " finalTextSizePx=" + view.getTextSize());
     }
 
     private static void installRainbow(Session s) {

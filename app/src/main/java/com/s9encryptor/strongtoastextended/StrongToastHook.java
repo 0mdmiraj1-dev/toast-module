@@ -13,7 +13,7 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * HyperOS 1 / Android 13 LSPosed SystemUI-only module (V0.6).
+ * HyperOS 1 / Android 13 LSPosed SystemUI-only module (V0.7).
  *
  * 1) Keep the proven 65-minute independent onAttachedToWindow() watchdog hook.
  * 2) Capture long text_bitmap Strong Toasts (61-3600 seconds).
@@ -57,7 +57,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
         installNativeHideEvents(param.classLoader);
         installShadeEvents(param.classLoader);
         installControlCenterEvents(param.classLoader);
-        XposedBridge.log(TAG + "V0.6 ready (native rainbow spans + styles + timer expiry alert)");
+        XposedBridge.log(TAG + "V0.7 ready (native rainbow spans + styles + timer expiry alert)");
     }
 
     private static void onMain(Runnable action) {
