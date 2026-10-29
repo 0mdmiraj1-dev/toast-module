@@ -12,6 +12,7 @@ Record the phone model, HyperOS build, Android version, LSPosed version and sign
 - Signature permission on control reception, validated structured payloads, one-use bootstrap nonce, stale sequence rejection, private state callbacks and disconnect behavior.
 - Complete command Intents parcelled before reading extras, with a class loader that rejects app classes: connection, subscription revisions/reconnection and unsubscribe must use framework ResultReceiver proxies.
 - Native Android font/layout: `S9_Encryptor`, `S9_Encryptor `, `@S9_Encryptor`, Normal/Bold/Italic, emojis, rainbow spans, long marquee, countdown text, resize and listener cleanup.
+- Native rainbow appearance notifications with a stable text buffer, firmware text replacement, reduced motion and Stop; END-to-MARQUEE conversion, bounded viewport and repeated native selection/ellipsis resets.
 - Five-second recovery, panel held over 10 seconds, preserved original deadlines, no duplicate/stale recovery, Stop cancellation, finite failure retries and timer alert cleanup while the visual toast is paused.
 - Packaged launcher, legacy Xposed entrypoint, fallback PNG, bootstrap DEX digest and unsigned release contents.
 
@@ -30,6 +31,7 @@ Record the phone model, HyperOS build, Android version, LSPosed version and sign
 - [ ] Normal/Bold/Italic each show `S9_Encryptor` in full when space exists; compare with `S9_Encryptor ` and `@S9_Encryptor`.
 - [ ] Repeat with emoji/Unicode, RGB and countdown text. No added whitespace, unnecessary shrinking or icon overlap.
 - [ ] Genuinely long strings scroll using native marquee. Changing font/text, rotating or changing display size recalculates safely.
+- [ ] In V1.0.3, start `My name is S9_Encryptor` from the app with RGB enabled; test Normal/Bold/Italic. Observe moving colors in the real SystemUI Toast, full text when it fits and scrolling when it exceeds the icon-safe viewport. The app preview is not sufficient evidence.
 - [ ] HEX accepts `0bfc03`, `#0BFC03` and valid 8-digit values; invalid input cannot execute. Quotes, `$()`, backticks and newlines in text do not execute shell commands.
 - [ ] HyperCeiler icon displays when available; missing package/resource falls back to StrongToast's icon without crashing.
 - [ ] Rainbow moves smoothly in all font styles, survives reconstruction and stops immediately on Stop. Reduced motion gives a still spectrum.

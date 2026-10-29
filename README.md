@@ -1,6 +1,6 @@
 # StrongToast Extended
 
-One native Android APK containing a Kotlin/Jetpack Compose control app and the existing legacy LSPosed module for Xiaomi HyperOS SystemUI. Application ID: `com.s9encryptor.strongtoastextended`; version **1.0.2 (102)**. This continues the V0.7 project in the same package.
+One native Android APK containing a Kotlin/Jetpack Compose control app and the existing legacy LSPosed module for Xiaomi HyperOS SystemUI. Application ID: `com.s9encryptor.strongtoastextended`; version **1.0.3 (103)**. This continues the V0.7 project in the same package.
 
 ## Install and update
 
@@ -41,6 +41,14 @@ Host tests cover validation, real DataStore preset CRUD, MVVM races, command per
 [Migration notes](docs/MIGRATION.md) explain the replaced Termux components. [Dependency audit](docs/DEPENDENCY_AUDIT.md) records the V0.7 baseline. The retained `termux/` directory is historical source, not an application dependency.
 
 If needed, turn off Enhanced effects in Settings, press Stop, or disable the module in LSPosed and reboot. Keep your known-working signed APK for rollback; Android may require uninstalling before installing a lower version code.
+
+## 1.0.3 native rainbow and marquee
+
+The native TextView now receives an appearance-span notification across the full text on each rainbow frame, so cached text rendering is invalidated without replacing the text buffer or restarting marquee. If firmware replaces the text on the same view, rainbow spans are installed again. Reduced motion and Stop cancel animation updates.
+
+Overflowing text gets a bounded viewport, single-line horizontal scrolling, infinite native marquee and selected state. It no longer restores a firmware END-ellipsis configuration when text exceeds the available width. Fitting text retains measured glyph-overhang padding and no ellipsis; the right icon remains outside the text viewport. Reconciliation also detects firmware changes to ellipsize/selection on an otherwise unchanged view. Original view settings are restored on cleanup.
+
+Host regressions include `My name is S9_Encryptor` in Normal/Bold/Italic at fitting and overflowing widths, firmware resets, text replacement, appearance notifications without per-frame setText, reduced motion and Stop. The reported V1.0.2 native rendering problem requires retesting on the target phone with this update; the Compose preview is not native rendering evidence. Sign, install, reboot to reload SystemUI hooks, then test Start and long-text scrolling.
 
 ## 1.0.2 cross-process callback fix
 

@@ -74,7 +74,7 @@ public class NativeTextLayoutTest {
         }
     }
     @Test public void shortStringsDoNotRequireTrailingWhitespaceForAnyFont() {
-        for(String label:new String[]{"S9_Encryptor","S9_Encryptor ","@S9_Encryptor","S9 😀","Remaining 29:59"})
+        for(String label:new String[]{"S9_Encryptor","S9_Encryptor ","@S9_Encryptor","My name is S9_Encryptor","S9 😀","Remaining 29:59"})
             for(int style:new int[]{Typeface.NORMAL,Typeface.BOLD,Typeface.ITALIC}) {
                 Fixture f=new Fixture(label,style,false,false); f.assertFits(label); f.binding.close();
             }
@@ -89,8 +89,55 @@ public class NativeTextLayoutTest {
     @Test public void genuinelyLongTextKeepsNativeMarquee() {
         Fixture f=new Fixture("Long scrolling status 😀 ".repeat(30),Typeface.BOLD,true,true);
         assertEquals(TextUtils.TruncateAt.MARQUEE,f.text.getEllipsize());
-        assertEquals(f.originalWidth,f.text.getLayoutParams().width);
+        assertTrue(f.text.getLayoutParams().width <= f.binding.availablePixels());
+        assertTrue(f.text.isSelected());
+        assertEquals(-1,f.text.getMarqueeRepeatLimit());
         assertEquals(22f,f.text.getTextSize(),.01f); f.binding.close();
+    }
+    @Test public void nativeEndEllipsisBecomesBoundedMarqueeForAllFonts() {
+        for (int style : new int[]{Typeface.NORMAL, Typeface.BOLD, Typeface.ITALIC}) {
+            Fixture f = new Fixture("My name is S9_Encryptor", style, true, false);
+            f.text.setSelected(false);
+            f.text.setEllipsize(TextUtils.TruncateAt.END);
+            f.settle(190);
+            assertEquals(TextUtils.TruncateAt.MARQUEE, f.text.getEllipsize());
+            assertTrue(f.text.isSelected());
+            assertEquals(-1, f.text.getMarqueeRepeatLimit());
+            assertTrue(f.text.getLayout().getLineWidth(0) > f.text.getWidth() - f.text.getCompoundPaddingLeft() - f.text.getCompoundPaddingRight());
+            assertTrue(f.left.getLeft() + f.text.getWidth() <= f.icon.getLeft() - 2);
+            f.settle(400); f.assertFits("My name is S9_Encryptor");
+            f.binding.close();
+        }
+    }
+    @Test public void firmwareResetOnTheSameTextDoesNotLeaveEllipsisEnabled() {
+        Fixture f = new Fixture("S9_Encryptor", Typeface.BOLD, true, false);
+        f.text.setEllipsize(TextUtils.TruncateAt.END);
+        f.settle(400); f.assertFits("S9_Encryptor");
+        f.text.setText("My name is S9_Encryptor ".repeat(8)); f.settle(240);
+        f.text.setSelected(false); f.text.setEllipsize(TextUtils.TruncateAt.END);
+        f.settle(240);
+        assertEquals(TextUtils.TruncateAt.MARQUEE, f.text.getEllipsize());
+        assertTrue(f.text.isSelected());
+        int before = f.binding.reconciliationCount();
+        for(int i=0;i<50;i++) f.binding.reconcileNow();
+        assertTrue(f.binding.reconciliationCount()-before<3);
+        f.binding.close();
+    }
+    @Test public void cleanupRestoresNativeLineModesAndMarqueeSelection() {
+        Fixture f = new Fixture("S9_Encryptor", Typeface.NORMAL, false, false);
+        f.binding.close();
+        f.text.setSingleLine(false); f.text.setMaxLines(3); f.text.setMinHeight(17);
+        f.text.setHorizontallyScrolling(false); f.text.setMarqueeRepeatLimit(2); f.text.setSelected(false);
+        f.text.setText("My name is S9_Encryptor ".repeat(8));
+        NativeTextLayout.Binding b = NativeTextLayout.bind(f.text, f.root, f.left, f.icon);
+        for (int i=0;i<5;i++) { f.layout(240); b.reconcileNow(); }
+        assertEquals(TextUtils.TruncateAt.MARQUEE, f.text.getEllipsize());
+        assertTrue(f.text.isSingleLine());
+        b.close();
+        assertFalse(f.text.isSingleLine()); assertFalse(f.text.isHorizontallyScrollable());
+        assertEquals(3, f.text.getMaxLines()); assertEquals(17, f.text.getMinHeight());
+        assertEquals(2, f.text.getMarqueeRepeatLimit()); assertFalse(f.text.isSelected());
+        assertEquals(TextUtils.TruncateAt.END, f.text.getEllipsize());
     }
     @Test public void reusedViewGetsOriginalFontAndLayoutBack() {
         Fixture f=new Fixture("S9_Encryptor",Typeface.BOLD,false,false);

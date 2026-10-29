@@ -136,6 +136,7 @@ final class StrongToastEffects {
         TextView shakeView;
         float shakeOrigin;
         RainbowSpan[] spans;
+        AppearancePulse appearancePulse;
         boolean rainbowFallback;
         float phase;
         int previousSeconds = -1;
@@ -174,6 +175,12 @@ final class StrongToastEffects {
             paint.setShader(null);
             paint.setColor(Color.HSVToColor(new float[]{hue, .95f, 1f}));
         }
+    }
+
+    // A full-range appearance notification invalidates TextView's cached text display
+    // list. View.invalidate() alone does not tell DynamicLayout that mutable spans changed.
+    private static final class AppearancePulse extends CharacterStyle implements UpdateAppearance {
+        @Override public void updateDrawState(TextPaint paint) { }
     }
 
     private static void schedule(final Session s, long delayMs) {
@@ -232,7 +239,7 @@ final class StrongToastEffects {
             Object left = XposedHelpers.getObjectField(toast, "mLeftTextView");
             if (!(left instanceof TextView)) return false;
             TextView view = (TextView) left;
-            if (s.view != view) {
+            if (s.view != view || s.layout == null || s.layout.isClosed()) {
                 releaseNativeView(s);
                 s.view = view;
                 s.layout = prepareNativeLayout(toast);
@@ -289,6 +296,8 @@ final class StrongToastEffects {
                 colored.setSpan(span, from, to, 33); // Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             }
             v.getPaint().setShader(null);
+            s.appearancePulse = new AppearancePulse();
+            colored.setSpan(s.appearancePulse, 0, colored.length(), 33);
             v.setText(colored, TextView.BufferType.SPANNABLE);
             s.spans = newSpans;
             XposedBridge.log(TAG + "Rainbow spans installed count=" + segments);
@@ -301,9 +310,22 @@ final class StrongToastEffects {
     private static void updateRainbow(Session s, long now) {
         if (s.view == null) return;
         s.phase = s.reducedMotion ? 0f : ((now - s.createdAt) % 6200L) / 6200f;
+        // Firmware can call setText again on the same native TextView. Rebind spans
+        // only after that replacement; keep the same text buffer on ordinary frames.
+        CharSequence current = s.view.getText();
+        if (!s.rainbowFallback && (!(current instanceof Spannable) || s.appearancePulse == null ||
+            ((Spannable) current).getSpanStart(s.appearancePulse) < 0 || s.spans == null ||
+            s.spans.length == 0 || ((Spannable) current).getSpanStart(s.spans[0]) < 0)) {
+            installRainbow(s);
+            current = s.view.getText();
+        }
         if (s.rainbowFallback || s.spans == null) {
             // Visible fallback if the ROM rejects colored CharacterStyle spans.
             s.view.setTextColor(Color.HSVToColor(new float[]{360f * s.phase, 1f, 1f}));
+        } else if (current instanceof Spannable && s.appearancePulse != null) {
+            // Same bounds still notify SpanWatchers; no setText, layout replacement,
+            // font measurement change or marquee restart is required per frame.
+            ((Spannable) current).setSpan(s.appearancePulse, 0, current.length(), 33);
         }
         s.view.invalidate();
     }
@@ -413,7 +435,9 @@ final class StrongToastEffects {
             Spannable text = (Spannable)s.view.getText();
             for (RainbowSpan span : text.getSpans(0, text.length(), RainbowSpan.class))
                 if (span.owner == s) text.removeSpan(span);
+            if (s.appearancePulse != null) text.removeSpan(s.appearancePulse);
         }
+        s.appearancePulse = null;
         releaseLayout(s);
     }
 

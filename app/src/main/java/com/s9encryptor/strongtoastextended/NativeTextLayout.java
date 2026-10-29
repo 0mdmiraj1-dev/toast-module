@@ -6,6 +6,7 @@ import android.text.Editable;
 import android.text.Layout;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.text.method.TransformationMethod;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
@@ -37,12 +38,18 @@ public final class NativeTextLayout {
         private final Typeface originalTypeface;
         private final float originalSize;
         private final boolean originalSelected;
+        private final int originalRepeat, originalMinLines, originalMaxLines, originalMinHeight, originalMaxHeight;
+        private final boolean originalHorizontal, originalSingleLine;
+        private final TransformationMethod originalTransformation;
         private final View.OnLayoutChangeListener layoutListener;
         private final View.OnAttachStateChangeListener attachListener;
         private final TextWatcher watcher;
         private boolean queued, closed, applying, verifyIcon;
+        private boolean marqueeApplied;
+        private int expectedWidth, expectedLeftPadding, expectedRightPadding;
+        private TextUtils.TruncateAt expectedEllipsize;
         private long previousGeometry = Long.MIN_VALUE, appliedKey = Long.MIN_VALUE, blockedKey = Long.MIN_VALUE;
-        private int stablePasses, retries, protectedIconLeft, protectedRootWidth;
+        private int stablePasses, retries;
         private float lastAvailable, lastRequired;
         private int reconciliations;
         private final Runnable reconcile = this::reconcile;
@@ -59,6 +66,12 @@ public final class NativeTextLayout {
             paddingLeft = text.getPaddingLeft(); paddingTop = text.getPaddingTop();
             paddingRight = text.getPaddingRight(); paddingBottom = text.getPaddingBottom();
             ellipsize = text.getEllipsize(); originalSelected = text.isSelected();
+            originalRepeat = text.getMarqueeRepeatLimit();
+            originalMinLines = text.getMinLines(); originalMaxLines = text.getMaxLines();
+            originalMinHeight = text.getMinHeight(); originalMaxHeight = text.getMaxHeight();
+            originalHorizontal = android.os.Build.VERSION.SDK_INT >= 29 && text.isHorizontallyScrollable();
+            originalSingleLine = android.os.Build.VERSION.SDK_INT >= 29 ? text.isSingleLine() : originalMaxLines == 1;
+            originalTransformation = text.getTransformationMethod();
             originalTypeface = text.getTypeface(); originalSize = text.getTextSize();
             layoutListener = (v, l, t, r, b, ol, ot, or, ob) -> { if (!applying) refresh(); };
             watcher = new TextWatcher() {
@@ -101,14 +114,17 @@ public final class NativeTextLayout {
                     return;
                 }
                 long key = externalKey(value);
-                if (blockedKey == key) return;
+                if (blockedKey == key) { configureMarquee(); return; }
                 int textX = localX(text, root);
                 int rootEnd = root.getWidth() - root.getPaddingRight();
                 int iconX = right != null && right.getVisibility() != View.GONE && right.getWidth() > 0 ? localX(right, root) : rootEnd;
                 if (verifyIcon) {
                     verifyIcon = false;
-                    if (root.getWidth() == protectedRootWidth && Math.abs(iconX - protectedIconLeft) > 1) {
-                        restoreGeometry(); blockedKey = key; return;
+                    // Wrap-content rows may legitimately move the icon after remeasure.
+                    // Roll back only on actual overlap or an icon leaving the root bounds.
+                    if (right != null && right.getVisibility() != View.GONE &&
+                        (textX + text.getWidth() > iconX || iconX + right.getWidth() > rootEnd)) {
+                        restoreGeometry(); configureMarquee(); blockedKey = key; return;
                     }
                 }
                 // LTR and the right-icon toast layout: if the icon is on the other side,
@@ -122,7 +138,7 @@ public final class NativeTextLayout {
                 long geometry = key * 31 + boundary;
                 if (geometry != previousGeometry) { previousGeometry = geometry; stablePasses = 0; refresh(); return; }
                 if (++stablePasses < 1) { refresh(); return; }
-                if (appliedKey == geometry) return;
+                if (appliedKey == geometry && configurationMatches()) return;
                 retries = 0;
                 float advance = text.getPaint().measureText(value);
                 float styled = Layout.getDesiredWidth(text.getText(), text.getPaint());
@@ -138,12 +154,11 @@ public final class NativeTextLayout {
                 lastAvailable = capacity; lastRequired = desired;
                 applying = true;
                 reconciliations++;
-                if (value.indexOf('\n') >= 0 || desired > capacity || value.codePointCount(0, value.length()) > 512) {
-                    // Genuinely long text keeps the native font, allocation and marquee.
-                    restoreGeometry(); appliedKey = geometry; return;
-                }
-                int width = Math.min((int)capacity, Math.max(desired, Math.min(originalMin, (int)capacity)));
-                protectedIconLeft = iconX; protectedRootWidth = root.getWidth();
+                boolean scrolling = value.indexOf('\n') >= 0 || desired > capacity;
+                // A wrap-content width equal to the full string disables marquee entirely.
+                // Allocate a bounded viewport before selecting native scrolling.
+                int width = scrolling ? (int)capacity :
+                    Math.min((int)capacity, Math.max(desired, Math.min(originalMin, (int)capacity)));
                 boolean changed = false;
                 if (left != null && left != root && left != text && isDescendant(text, left)) {
                     int leftX = localX(left, root);
@@ -156,7 +171,14 @@ public final class NativeTextLayout {
                 }
                 if (text.getMaxWidth() < width) { text.setMaxWidth(width); changed = true; }
                 if (text.getMinWidth() > width) { text.setMinWidth(width); changed = true; }
-                if (text.getEllipsize() != null) { text.setEllipsize(null); changed = true; }
+                if (scrolling) configureMarquee();
+                else {
+                    restoreLineProperties();
+                    if (text.getEllipsize() != null) { text.setEllipsize(null); changed = true; }
+                }
+                expectedWidth = width;
+                expectedLeftPadding = newPaddingLeft; expectedRightPadding = newPaddingRight;
+                expectedEllipsize = text.getEllipsize();
                 appliedKey = geometry;
                 verifyIcon = changed && right != null;
                 if (verifyIcon) refreshAfterApply();
@@ -169,6 +191,32 @@ public final class NativeTextLayout {
         private void refreshAfterApply() {
             if (!queued && !closed) { queued = true; text.postOnAnimation(reconcile); }
         }
+        private boolean configurationMatches() {
+            return widthOf(text) == expectedWidth && text.getPaddingLeft() == expectedLeftPadding &&
+                text.getPaddingRight() == expectedRightPadding && text.getEllipsize() == expectedEllipsize &&
+                (!marqueeApplied || (text.isSelected() && text.getMarqueeRepeatLimit() == -1 && text.getMaxLines() == 1));
+        }
+        private void configureMarquee() {
+            if (!marqueeApplied || text.getMaxLines() != 1) {
+                text.setSingleLine(true);
+                text.setHorizontallyScrolling(true);
+                marqueeApplied = true;
+            }
+            if (text.getEllipsize() != TextUtils.TruncateAt.MARQUEE) text.setEllipsize(TextUtils.TruncateAt.MARQUEE);
+            if (text.getMarqueeRepeatLimit() != -1) text.setMarqueeRepeatLimit(-1);
+            if (!text.isSelected()) text.setSelected(true);
+        }
+        private void restoreLineProperties() {
+            if (!marqueeApplied) return;
+            marqueeApplied = false;
+            text.setSingleLine(originalSingleLine);
+            text.setHorizontallyScrolling(originalHorizontal);
+            if (originalMinLines >= 0) text.setMinLines(originalMinLines); else text.setMinHeight(originalMinHeight);
+            if (originalMaxLines >= 0) text.setMaxLines(originalMaxLines); else text.setMaxHeight(originalMaxHeight);
+            text.setTransformationMethod(originalTransformation);
+            text.setMarqueeRepeatLimit(originalRepeat);
+            text.setSelected(originalSelected);
+        }
         private long externalKey(String value) {
             long key = value.hashCode();
             key = key * 31 + System.identityHashCode(text.getTypeface());
@@ -180,6 +228,7 @@ public final class NativeTextLayout {
         }
         private void restoreGeometry() {
             try {
+                restoreLineProperties();
                 setWidth(text, originalWidth);
                 if (left != null && left != root && left != text) setWidth(left, originalLeftWidth);
                 if (text.getPaddingLeft() != paddingLeft || text.getPaddingRight() != paddingRight)
