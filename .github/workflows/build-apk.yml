@@ -40,7 +40,7 @@ jobs:
           APK=app/build/outputs/apk/release/app-release-unsigned.apk
           python3 scripts/verify_apk.py "$APK"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" > apk-badging.txt
-          head -n 1 apk-badging.txt | grep -F "name='com.s9encryptor.strongtoastextended' versionCode='101' versionName='1.0.1'"
+          head -n 1 apk-badging.txt | grep -F "name='com.s9encryptor.strongtoastextended' versionCode='102' versionName='1.0.2'"
           grep -F "launchable-activity: name='com.s9encryptor.strongtoastextended.app.MainActivity'" apk-badging.txt
           if "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify "$APK" > apk-signature.txt 2>&1; then
             echo 'Expected an unsigned release; refusing a pre-signed artifact.'

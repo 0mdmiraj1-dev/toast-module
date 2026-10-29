@@ -5,9 +5,12 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.os.Binder
 import android.os.Bundle
+import android.os.Parcel
 import android.os.ResultReceiver
 import android.os.SystemClock
 import com.s9encryptor.strongtoastextended.bridge.BridgeProtocol
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -17,7 +20,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], manifest = Config.NONE)
+@Config(sdk = [33], manifest = Config.NONE, shadows = [com.s9encryptor.strongtoastextended.StrongToastBridgeTest.RealResultReceiver::class])
 class ModuleClientTest {
     @Test fun connectUsesPrivateReplyAndExplicitSystemUiPackage() = runBlocking {
         val context = TestContext()
@@ -89,19 +92,47 @@ class ModuleClientTest {
         client.close()
     }
 
+    @Test fun closeAlsoSendsAFrameworkOnlyCallback() = runBlocking {
+        val context = TestContext()
+        val client = ModuleClient(context)
+        assertTrue(client.connect().success)
+        client.close()
+        assertTrue("Unsubscribe must decode without app classes", context.unsubscribed.await(3, TimeUnit.SECONDS))
+    }
+
     private class TestContext : ContextWrapper(RuntimeEnvironment.getApplication()) {
         @Volatile var lastQuery: Intent? = null
         @Volatile var receiver: ResultReceiver? = null
         var revision = 20L
         var corruptRequestId = false
+        val unsubscribed = CountDownLatch(1)
         private val module = Binder()
         override fun getApplicationContext(): Context = this
         override fun sendBroadcast(intent: Intent) {
-            if (intent.getStringExtra("command") == "UNSUBSCRIBE") return
-            lastQuery = Intent(intent)
-            val reply = intent.getParcelableExtra<ResultReceiver>("reply")!!
+            // A real SystemUI process cannot load the app's anonymous callback class.
+            // Parcel before any extras access; pre-decoding with the app loader hides this bug.
+            val parcel = Parcel.obtain()
+            val delivered = try {
+                intent.writeToParcel(parcel, 0)
+                parcel.setDataPosition(0)
+                Intent.CREATOR.createFromParcel(parcel).apply {
+                    setExtrasClassLoader(object : ClassLoader(ResultReceiver::class.java.classLoader) {
+                        override fun loadClass(name: String, resolve: Boolean): Class<*> {
+                            if (name.startsWith("com.s9encryptor.")) throw ClassNotFoundException(name)
+                            return super.loadClass(name, resolve)
+                        }
+                    })
+                }
+            } finally { parcel.recycle() }
+            val reply = delivered.getParcelableExtra<ResultReceiver>("reply")!!
+            assertEquals(ResultReceiver::class.java, reply.javaClass)
+            if (delivered.getStringExtra("command") == "UNSUBSCRIBE") {
+                unsubscribed.countDown()
+                return
+            }
+            lastQuery = delivered
             receiver = reply
-            val payload = response(intent, revision, active = true)
+            val payload = response(delivered, revision, active = true)
             if (corruptRequestId) payload.putString("requestId", "not-the-private-request")
             reply.send(0, payload)
         }

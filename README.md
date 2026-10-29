@@ -1,6 +1,6 @@
 # StrongToast Extended
 
-One native Android APK containing a Kotlin/Jetpack Compose control app and the existing legacy LSPosed module for Xiaomi HyperOS SystemUI. Application ID: `com.s9encryptor.strongtoastextended`; version **1.0.1 (101)**. This continues the V0.7 project in the same package.
+One native Android APK containing a Kotlin/Jetpack Compose control app and the existing legacy LSPosed module for Xiaomi HyperOS SystemUI. Application ID: `com.s9encryptor.strongtoastextended`; version **1.0.2 (102)**. This continues the V0.7 project in the same package.
 
 ## Install and update
 
@@ -41,6 +41,14 @@ Host tests cover validation, real DataStore preset CRUD, MVVM races, command per
 [Migration notes](docs/MIGRATION.md) explain the replaced Termux components. [Dependency audit](docs/DEPENDENCY_AUDIT.md) records the V0.7 baseline. The retained `termux/` directory is historical source, not an application dependency.
 
 If needed, turn off Enhanced effects in Settings, press Stop, or disable the module in LSPosed and reboot. Keep your known-working signed APK for rollback; Android may require uninstalling before installing a lower version code.
+
+## 1.0.2 cross-process callback fix
+
+The supplied Android 13 device logs identify the failed connection: SystemUI received the command, but Android could not unmarshal the app's anonymous `ModuleClient` ResultReceiver subclass. The callback failed before a reply could be sent. An enabled LSPosed scope and granted root were not the cause of this error.
+
+All command and unsubscribe callbacks now pass through `ResultReceiver.CREATOR` before entering an Intent. Only the framework class name and its private Binder endpoint cross the process boundary; the local callback implementation stays in the app. Signature permission, private callbacks, request IDs and sequence checks remain enforced. Regression transports parcel the complete Intent with a loader that rejects app classes, including subscription updates and unsubscribe. The previous host test decoded extras with the app loader too early and did not model this failure.
+
+Sign the unsigned APK with the existing certificate, install the update, reboot, and Refresh. Check that System UI connects, then test Start/Update/Stop and reopening the app. This release addresses the exception observed in the logs; successful operation on the target phone still needs verification.
 
 ## 1.0.1 connection diagnostics
 

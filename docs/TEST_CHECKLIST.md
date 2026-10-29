@@ -10,6 +10,7 @@ Record the phone model, HyperOS build, Android version, LSPosed version and sign
 - Preferences decoding, durable writes and rapid settings edits; early lifecycle events do not overwrite saved data.
 - Compose navigation and Editor command binding, saved-preset activation/edit loading, timer actions and persisted settings. Real DataStore preset save/edit/rename/reorder/delete is covered independently.
 - Signature permission on control reception, validated structured payloads, one-use bootstrap nonce, stale sequence rejection, private state callbacks and disconnect behavior.
+- Complete command Intents parcelled before reading extras, with a class loader that rejects app classes: connection, subscription revisions/reconnection and unsubscribe must use framework ResultReceiver proxies.
 - Native Android font/layout: `S9_Encryptor`, `S9_Encryptor `, `@S9_Encryptor`, Normal/Bold/Italic, emojis, rainbow spans, long marquee, countdown text, resize and listener cleanup.
 - Five-second recovery, panel held over 10 seconds, preserved original deadlines, no duplicate/stale recovery, Stop cancellation, finite failure retries and timer alert cleanup while the visual toast is paused.
 - Packaged launcher, legacy Xposed entrypoint, fallback PNG, bootstrap DEX digest and unsigned release contents.
@@ -21,6 +22,7 @@ Record the phone model, HyperOS build, Android version, LSPosed version and sign
 - [ ] App launches as a native UI without Termux installed. Root initially reports Unknown/Not granted accurately.
 - [ ] First privileged Start produces the normal Magisk prompt. Denial gives a clear error; no automatic prompt loop. Explicit retry can grant access.
 - [ ] Root grant and hook connection are separate indicators. Unsupported firmware reports failure without claiming visible success.
+- [ ] After the 1.0.2 update and reboot, Refresh connects without a Parcel `ClassNotFoundException` for the app's callback. Start/Update/Stop work and returning to the app restores the live subscription.
 
 ## Editor and native text — target phone
 

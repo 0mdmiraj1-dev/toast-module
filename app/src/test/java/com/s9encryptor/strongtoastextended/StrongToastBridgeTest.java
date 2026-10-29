@@ -13,6 +13,7 @@ import android.os.Looper;
 import android.os.ResultReceiver;
 import android.os.SystemClock;
 import com.s9encryptor.strongtoastextended.bridge.BridgeProtocol;
+import com.s9encryptor.strongtoastextended.bridge.FrameworkReply;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -102,7 +103,7 @@ public final class StrongToastBridgeTest {
         RecordingContext context = new RecordingContext();
         call("attach", new Class<?>[]{Context.class}, context);
         Bundle input = request("GET_CURRENT_STATE", SystemClock.elapsedRealtimeNanos());
-        input.putParcelable("reply", reply);
+        input.putParcelable("reply", FrameworkReply.forTransport(reply));
         input.putBinder("clientToken", new Binder());
         Intent outgoing = new Intent(BridgeProtocol.ACTION).setPackage(BridgeProtocol.SYSTEM_UI).putExtras(input);
         android.os.Parcel parcel = android.os.Parcel.obtain();
@@ -110,8 +111,7 @@ public final class StrongToastBridgeTest {
             outgoing.writeToParcel(parcel, 0);
             parcel.setDataPosition(0);
             Intent delivered = Intent.CREATOR.createFromParcel(parcel);
-            Object decoded = delivered.getParcelableExtra("reply");
-            assertTrue("Decoded private callback: " + decoded, decoded instanceof ResultReceiver);
+            // Do not decode extras with the test/app loader before the real receiver.
             context.receiver.onReceive(context, delivered);
             assertEquals("Receiver error", "", get("lastError"));
             Bundle result = takeReply();

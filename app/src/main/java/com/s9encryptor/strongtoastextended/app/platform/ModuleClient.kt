@@ -10,6 +10,7 @@ import android.os.SystemClock
 import com.s9encryptor.strongtoastextended.app.model.ModuleSnapshot
 import com.s9encryptor.strongtoastextended.app.model.OperationResult
 import com.s9encryptor.strongtoastextended.bridge.BridgeProtocol
+import com.s9encryptor.strongtoastextended.bridge.FrameworkReply
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -91,11 +92,11 @@ class ModuleClient(context: Context) {
             }
             pending[id] = entry
         }
-        val outgoing = Bundle(validated).apply {
-            putParcelable("reply", receiver)
-            putBinder("clientToken", state.second)
-        }
         try {
+            val outgoing = Bundle(validated).apply {
+                putParcelable("reply", FrameworkReply.forTransport(receiver))
+                putBinder("clientToken", state.second)
+            }
             // Registration's sender permission authenticates this app's signature. A receiver
             // permission here would incorrectly require SystemUI to own our app permission.
             application.sendBroadcast(Intent(BridgeProtocol.ACTION).setPackage(BridgeProtocol.SYSTEM_UI)
@@ -264,7 +265,7 @@ class ModuleClient(context: Context) {
                     putLong("sequence", nextSequence())
                     putString("command", "UNSUBSCRIBE")
                     putBinder("clientToken", token)
-                    putParcelable("reply", object : ResultReceiver(null) {})
+                    putParcelable("reply", FrameworkReply.forTransport(object : ResultReceiver(null) {}))
                 }
                 application.sendBroadcast(Intent(BridgeProtocol.ACTION).setPackage(BridgeProtocol.SYSTEM_UI)
                 .addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES).putExtras(payload))
