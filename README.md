@@ -1,43 +1,54 @@
-# HyperOS StrongToast Extended (experimental LSPosed source project)
+# StrongToast Extended Auto-Restore V0.3 (experimental)
 
-## What it does
+This updates the `StrongToast Extended` LSPosed module to V0.3. It keeps the package name (`com.s9encryptor.strongtoastextended`), hook entrypoint, and duration CLI. Automated Gradle builds check compilation and Android lint; **on-device behavior has not been tested on your exact SystemUI**.
 
-On some HyperOS 1 (Android 13) SystemUI builds, `com.android.systemui.toast.MIUIStrongToast.onAttachedToWindow()` schedules a hardcoded 30,000 ms hide callback via `mLastHandler` and `mHideStrongToastRunnable`. This LSPosed legacy module reschedules **only that safety callback** to 65 minutes.
+Signing depends on the build environment. The existing GitHub workflow creates a debug APK with a fresh runner-generated key. The earlier GitHub APK signing key was not retained, so this build cannot be assumed to install over it. A matching original signing key is required for an in-place update.
 
-The actual toast request also schedules a second callback using its `duration` from the Bundle; the request must still use the intended duration, e.g. `900000` ms for 15 minutes. For that, the accompanying `strongtoast_extend_duration.sh` patches the preexisting Termux helper to permit up to 3600 seconds. It preserves the current icon and text-color setup by editing only the duration guards.
+## Why V0.2 was insufficient
 
-## Requirements
+On the user's device the native toast itself blocks pulling the Notification Shade. The user taps the right-side icon first; the toast disappears, and *then* they open the shade or Control Center. V0.2 primarily watched shade expand/collapse events, and did not explicitly register a native hide. It could work if the shade expanded and collapsed, but not reliably for right-icon dismissal alone.
 
-- Rooted HyperOS system with LSPosed (legacy Xposed modules supported)
-- Android Studio / JDK 17, Gradle Sync, Android SDK 35
-- Existing working Termux `strongtoast` helper from this conversation
+## New V0.3 logic
 
-## Build
+- Keeps the existing `MIUIStrongToast.onAttachedToWindow` **65-minute watchdog** extension.
+- Captures 61–3600-second `text_bitmap` requests; stores the original Bundle (color, icon, text) and monotonic expiry time.
+- Hooks native `MIUIStrongToast.hideStrongToast()` and `MIUIStrongToast.onComplete()` to record dismissal (not the click directly). This is more robust across right-icon click and animation paths.
+- If the toast disappears, starts a **5-second fallback** before restoring. This gives time to pull down Notification Shade.
+- When Shade / Control Center opens, cancels any pending restore; after it closes, tries to restore after **900ms**, *only if* the toast is genuinely hidden and has remaining duration. It does not restore while a panel or keyguard is open.
+- If nothing is opened after tapping the icon, fallback tries to show the toast again 5 seconds later.
+- No repetitive `su`, no periodic Termux polling, no new 30-minute timer on replay.
+- Short/replacement toast requests clear the cache. An explicit native `hide_strong_toast` command cancels replay.
 
-1. In Android Studio: **Open** this project folder.
-2. Sync Gradle, then **Build > Build APK(s)**.
-3. Install the APK; enable it in LSPosed Manager.
-4. Select **only** scope `com.android.systemui` (NOT Android/System Framework).
-5. Restart SystemUI / reboot the phone (reboot recommended).
-6. In Termux run `bash ~/storage/downloads/strongtoast_extend_duration.sh`.
-7. Test: `strongtoast -c '#0BFC03' -d 90 '90-second visibility test'`.
-8. Then: `strongtoast -c '#0BFC03' -d 900 '15-minute test'` or `runToastLong`.
+## Build/install
 
-LSPosed logs should show `[StrongToastExtended] Hook registered...`.
+1. Update the **existing Codex project** with this ZIP's `StrongToastHook.java`, `app/build.gradle`, and `AndroidManifest.xml`; **keep your existing Gradle wrapper, GitHub Actions and signing setup**.
+2. Build the APK. An in-place install over v0.1/v0.2 requires the same signing certificate. GitHub debug builds from different runs use different keys; use your original matching signing configuration when available. Do not assume this APK can update an already installed GitHub build.
+3. LSPosed → StrongToast Extended → enable only **System UI** scope. Reboot.
+4. Stop legacy polling loop (`stopToast`), then run `strongtoast -c '#0BFC03' -d 300 'S9_Encryptor'`.
+5. Test A: tap right-side icon, do **not** open panel; Toast should be attempted again after about 5 seconds.
+6. Test B: tap icon, immediately open Notification Shade, hold 10s, close; toast should be attempted about 900ms after closing.
+7. Test C: same with Control Center; then wait for actual 5-minute expiry to verify it does not restart beyond expiry.
 
-If `compileOnly 'de.robv.android.xposed:api:82'` cannot be fetched, obtain a trusted Xposed API 82 JAR locally and change dependency to `compileOnly files('libs/api-82.jar')`.
+## Caveats
 
-## Important limitations
+- Based on published decompilation of a comparable Xiaomi SystemUI, not a dump from this exact handset. Some callback names may differ and runtime checks still matter.
+- Due to timing/layout differences, **not guaranteed** to restore on every gesture; log lines help identify missing callbacks.
+- The `hideStrongToast` callback might fire for a native timeout or intentionally dismissing an unrelated toast. Time check and active-instance check reduce false restorations. Manual stop should use a short replacement toast or native hide action (v0.3 handles both).
+- The safety timer extends only the hard-coded native 30s watchdog; the normal duration timer still controls expiry.
+- Restarting SystemUI clears cached requests.
+- LSPosed SystemUI hooks may cause instability; have a way to disable the module if necessary.
 
-- **Not tested on your exact POCO X4 Pro firmware**. The referenced disassembly is from another HyperOS build.
-- If your ROM renamed, moved, or changed `MIUIStrongToast`, this hook won't work. It logs the issue; no SystemUI APK is modified.
-- Changing the timeout does NOT guarantee the toast stays up if the notification shade/control center or other SystemUI events dismiss it.
-- The existing `runToast` script still refreshes every 28 seconds. Use **`runToastLong`** after enabling the module to send once; it does not auto-restore after a panel dismissal.
-- `stopToast` from the old loop doesn't guarantee dismissal of a manually submitted 15+ minute toast; try requesting a 1-second replacement: `strongtoast -d 1 ' '`. On some ROM builds replacement may be ignored.
-- Any SystemUI hook could cause crashes. Keep recovery access to Magisk/LSPosed. Disable the module if SystemUI becomes unstable.
+## Logs
 
-## Source evidence
+In LSPosed logs search for `StrongToastAutoRestore`. Look for:
+- `Captured long toast`
+- `Native toast dismissed`
+- `Restore scheduled`
+- `Restore sent`
+- `Restore deferred`
 
-Decompiled source reference: https://github.com/ymdzq/k60_statusbar_lyric/blob/535d7a3b2c61ced49f76b6da555676570fd46443/MiuiSystemUI_decompile_xml/smali/classes/com/android/systemui/toast/MIUIStrongToast.smali
+Source evidence used: native `MIUIStrongToast.hideStrongToast`, `onComplete`, `MIUIStrongToastControl.showCustomStrongToast(Bundle)`, `ShadeExpansionStateManager.updateStateInternal(int)` and `ControlPanelWindowManager.onExpandChange(boolean)` in the Xiaomi decompilation at https://github.com/ymdzq/k60_statusbar_lyric.
 
-`onAttachedToWindow` schedules 0x7530 = 30000 ms; `showCustomStrongToast` uses `StrongToastModel.getDuration()` in `mShowStrongToastHandler.postDelayed`.
+## Additional behavior limits
+
+A restore deferred while keyguard is showing has no dedicated unlock retry in this source; another panel-close event may be needed. Partial shade-collapse behavior also depends on the firmware exposing the native panel state fields checked by the hook.
