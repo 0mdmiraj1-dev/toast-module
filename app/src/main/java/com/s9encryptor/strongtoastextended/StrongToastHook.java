@@ -19,7 +19,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 2) Capture long text_bitmap Strong Toasts (61-3600 seconds).
  * 3) Detect disappearance through native hideStrongToast()/onComplete(), even
  *    BEFORE the user is able to open the notification / control panel.
- * 4) When a panel opens, postpone restoring until it closes.
+ * 4) When a panel opens, keep a low-overhead deferred native state check until it closes.
  * 5) If the toast was manually dismissed but no panel is opened, retry after 5s.
  * 6) Restore only the REMAINING duration (clock: elapsedRealtime), without su.
  *
@@ -35,6 +35,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
     private static final long COLLAPSE_RESTORE_DELAY_MS = 900L;
     private static final long DISMISS_RESTORE_DELAY_MS = 5_000L;
     private static final long MIN_REMAINING_MS = 1_000L;
+    private static final long PANEL_RECHECK_MS = 1_500L;
 
     private static Handler main;
     private static Object toastControl;
@@ -55,7 +56,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
         installNativeHideEvents(param.classLoader);
         installShadeEvents(param.classLoader);
         installControlCenterEvents(param.classLoader);
-        XposedBridge.log(TAG + "V0.3 ready (native dismiss -> shade/CC close -> restore)");
+        XposedBridge.log(TAG + "V0.4 ready (native dismiss + persistent shade state recovery)");
     }
 
     private static void onMain(Runnable action) {
@@ -176,8 +177,10 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
                         final int state = (Integer)p.args[0];
                         onMain(new Runnable() { @Override public void run() {
                             shadeExpanded = state != 0;
-                            if (shadeExpanded) cancelPending();
-                            else if (saved != null) scheduleRestore(COLLAPSE_RESTORE_DELAY_MS, "shade collapsed");
+                            if (saved != null && (nativeDismissed || !nativeToastVisible())) {
+                                scheduleRestore(shadeExpanded ? PANEL_RECHECK_MS : COLLAPSE_RESTORE_DELAY_MS,
+                                    shadeExpanded ? "shade expanded (keep recovery armed)" : "shade collapsed");
+                            }
                         }});
                     }
                 });
@@ -192,13 +195,32 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
                         final boolean expanded = Boolean.TRUE.equals(p.args[0]);
                         onMain(new Runnable() { @Override public void run() {
                             shadeExpanded = expanded;
-                            if (expanded) cancelPending();
-                            else if (saved != null) scheduleRestore(COLLAPSE_RESTORE_DELAY_MS, "shade fully closed");
+                            if (saved != null && (nativeDismissed || !nativeToastVisible())) {
+                                scheduleRestore(expanded ? PANEL_RECHECK_MS : COLLAPSE_RESTORE_DELAY_MS,
+                                    expanded ? "shade fully expanded (keep recovery armed)" : "shade fully closed");
+                            }
                         }});
                     }
                 });
             XposedBridge.log(TAG + "CentralSurfaces shade hook installed");
         } catch (Throwable e) { log("CentralSurfaces hook missing", e); }
+
+        // Xiaomi's NotificationPanelViewController.endClosing() invokes this
+        // callback in several ROM builds even if expansion-state callbacks are late.
+        try {
+            XposedHelpers.findAndHookMethod("com.android.systemui.shade.ShadeControllerImpl", cl,
+                "onClosingFinished", new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        onMain(new Runnable() { @Override public void run() {
+                            if (saved != null && (nativeDismissed || !nativeToastVisible())) {
+                                scheduleRestore(COLLAPSE_RESTORE_DELAY_MS,
+                                    "shade onClosingFinished callback");
+                            }
+                        }});
+                    }
+                });
+            XposedBridge.log(TAG + "Shade onClosingFinished hook installed");
+        } catch (Throwable e) { log("Shade onClosingFinished hook missing", e); }
     }
 
     private static void installControlCenterEvents(ClassLoader cl) {
@@ -212,8 +234,10 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
                         final boolean expanded = value;
                         onMain(new Runnable() { @Override public void run() {
                             ccExpanded = expanded;
-                            if (expanded) cancelPending();
-                            else if (saved != null) scheduleRestore(COLLAPSE_RESTORE_DELAY_MS, "control center closed");
+                            if (saved != null && (nativeDismissed || !nativeToastVisible())) {
+                                scheduleRestore(expanded ? PANEL_RECHECK_MS : COLLAPSE_RESTORE_DELAY_MS,
+                                    expanded ? "control center expanded (keep recovery armed)" : "control center closed");
+                            }
                         }});
                     }
                 });
@@ -237,21 +261,43 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
     }
 
     private static boolean panelOpenNative() {
-        if (shadeExpanded || ccExpanded) return true;
-        if (toastControl == null) return false;
+        // Read live SystemUI state where possible. The event booleans are only
+        // fallback data: some HyperOS builds miss the final collapsed event.
+        boolean shadeOpen = shadeExpanded;
+        boolean ccOpen = ccExpanded;
+        if (toastControl == null) return shadeOpen || ccOpen;
         try {
             Object cc = XposedHelpers.getObjectField(toastControl, "mControlPanelWindowManager");
-            if (cc != null && XposedHelpers.getBooleanField(cc, "isExpand")) return true;
+            if (cc != null) ccOpen = XposedHelpers.getBooleanField(cc, "isExpand");
         } catch (Throwable ignored) { }
         try {
             Object central = XposedHelpers.getObjectField(toastControl, "mCentralSurfaces");
-            if (central != null && XposedHelpers.getBooleanField(central, "mPanelExpanded")) return true;
+            if (central != null) {
+                // The panel's expanded fraction is 0 when completely collapsed.
+                // This is more reliable than stale mPanelExpanded / event flags.
+                Object shade = null;
+                try { shade = XposedHelpers.getObjectField(central, "mShadeSurface"); }
+                catch (Throwable ignored) { }
+                if (shade != null) {
+                    try {
+                        float fraction = XposedHelpers.getFloatField(shade, "mExpandedFraction");
+                        boolean tracking = false;
+                        try { tracking = XposedHelpers.getBooleanField(shade, "mTracking"); }
+                        catch (Throwable ignored) { }
+                        shadeOpen = fraction > 0.001f || tracking;
+                    } catch (Throwable ignored) {
+                        shadeOpen = XposedHelpers.getBooleanField(central, "mPanelExpanded");
+                    }
+                } else {
+                    shadeOpen = XposedHelpers.getBooleanField(central, "mPanelExpanded");
+                }
+            }
         } catch (Throwable ignored) { }
         try {
             Object keyguard = XposedHelpers.getObjectField(toastControl, "mKeyguardStateController");
             if (keyguard != null && XposedHelpers.getBooleanField(keyguard, "mShowing")) return true;
         } catch (Throwable ignored) { }
-        return false;
+        return shadeOpen || ccOpen;
     }
 
     private static boolean nativeToastVisible() {
@@ -268,8 +314,11 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
         long remainingMs = expiresAt - SystemClock.elapsedRealtime();
         if (remainingMs < MIN_REMAINING_MS) { clearCache("duration elapsed"); return; }
         if (panelOpenNative()) {
-            XposedBridge.log(TAG + "Restore deferred: shade/control center/keyguard is active");
-            // No polling while a panel remains open. Its collapse callback retries.
+            XposedBridge.log(TAG + "Restore deferred: panel/keyguard open; recheck in " + PANEL_RECHECK_MS + "ms");
+            // Critical V0.4 fix: never abandon a hidden toast when the user
+            // keeps the Notification Panel open for 10 seconds or longer.
+            // This is a main-thread Handler, NOT a shell/su/root poll.
+            scheduleRestore(PANEL_RECHECK_MS, "panel still open; await native collapse");
             return;
         }
         if (nativeToastVisible()) {
@@ -288,7 +337,11 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
             XposedHelpers.callMethod(toastControl, "showCustomStrongToast", replayRequest);
             nativeDismissed = false;
             XposedBridge.log(TAG + "Restore sent. RemainingMs=" + remainingMs);
-        } catch (Throwable e) { log("restore failed", e); }
+        } catch (Throwable e) {
+            log("restore failed", e);
+            // A transient SystemUI race must not permanently abandon recovery.
+            scheduleRestore(PANEL_RECHECK_MS, "retry failed native replay");
+        }
         finally { replaying = false; }
     }
 

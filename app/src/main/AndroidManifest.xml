@@ -6,7 +6,7 @@
         android:label="StrongToast Extended"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <meta-data android:name="xposedmodule" android:value="true" />
-        <meta-data android:name="xposeddescription" android:value="Extend StrongToast duration; restore after native dismiss and panel collapse" />
+        <meta-data android:name="xposeddescription" android:value="Extend StrongToast duration; restore after native dismiss and lengthy notification shade use" />
         <meta-data android:name="xposedminversion" android:value="82" />
         <meta-data android:name="xposedscope" android:value="com.android.systemui" />
     </application>

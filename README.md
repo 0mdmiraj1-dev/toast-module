@@ -1,54 +1,45 @@
-# StrongToast Extended Auto-Restore V0.3 (experimental)
+# StrongToast Auto-Restore V0.4 (source; experimental)
 
-This updates the `StrongToast Extended` LSPosed module to V0.3. It keeps the package name (`com.s9encryptor.strongtoastextended`), hook entrypoint, and duration CLI. Automated Gradle builds check compilation and Android lint; **on-device behavior has not been tested on your exact SystemUI**.
+This **updates** the working V0.3 LSPosed source. It preserves the package ID `com.s9encryptor.strongtoastextended` and 65-minute watchdog hook. It is not a prebuilt APK.
 
-Signing depends on the build environment. The existing GitHub workflow creates a debug APK with a fresh runner-generated key. The earlier GitHub APK signing key was not retained, so this build cannot be assumed to install over it. A matching original signing key is required for an in-place update.
+## V0.3 test notes supplied with this source
 
-## Why V0.2 was insufficient
+- Right-side icon dismiss -> restore after ~5s: **PASS**.
+- Control Center -> restore: **PASS**.
+- Notification Panel held <5s -> restore: **PASS**.
+- Notification Panel held >=10s -> **FAIL** (Toast only returns after opening/closing Control Center).
 
-On the user's device the native toast itself blocks pulling the Notification Shade. The user taps the right-side icon first; the toast disappears, and *then* they open the shade or Control Center. V0.2 primarily watched shade expand/collapse events, and did not explicitly register a native hide. It could work if the shade expanded and collapsed, but not reliably for right-icon dismissal alone.
+## Why it fails
 
-## New V0.3 logic
+V0.3 cancels or consumes a pending retry while a shade is open. If the corresponding collapsed callback is missed, it leaves no retry scheduled. This explains the strong correlation with long shade-open periods but is not proven without your LSPosed log.
 
-- Keeps the existing `MIUIStrongToast.onAttachedToWindow` **65-minute watchdog** extension.
-- Captures 61–3600-second `text_bitmap` requests; stores the original Bundle (color, icon, text) and monotonic expiry time.
-- Hooks native `MIUIStrongToast.hideStrongToast()` and `MIUIStrongToast.onComplete()` to record dismissal (not the click directly). This is more robust across right-icon click and animation paths.
-- If the toast disappears, starts a **5-second fallback** before restoring. This gives time to pull down Notification Shade.
-- When Shade / Control Center opens, cancels any pending restore; after it closes, tries to restore after **900ms**, *only if* the toast is genuinely hidden and has remaining duration. It does not restore while a panel or keyguard is open.
-- If nothing is opened after tapping the icon, fallback tries to show the toast again 5 seconds later.
-- No repetitive `su`, no periodic Termux polling, no new 30-minute timer on replay.
-- Short/replacement toast requests clear the cache. An explicit native `hide_strong_toast` command cancels replay.
+## V0.4 changes
 
-## Build/install
+1. Track the native right-icon dismiss as before.
+2. Keep a low-cost **SystemUI Handler check every 1.5s only while a dismissed/hidden toast is awaiting restoration**; the check auto-stops after successful restore or original deadline expiry. This is *not* Termux polling and does not invoke Magisk or `su`.
+3. Install a fallback hook for the native `ShadeControllerImpl.onClosingFinished()` callback.
+4. Check actual Notification Panel `mExpandedFraction`/`mTracking`, Control Center `isExpand` and keyguard, falling back to previous event flags when not available. This avoids a stale expansion flag blocking recovery forever.
+5. Retain the 900ms collapse restore delay; cache original content and **remaining time**, not full duration. Avoid duplicate views; handle explicit native `hide_strong_toast` command.
+6. If native replay throws, retry while the original duration remains.
 
-1. Update the **existing Codex project** with this ZIP's `StrongToastHook.java`, `app/build.gradle`, and `AndroidManifest.xml`; **keep your existing Gradle wrapper, GitHub Actions and signing setup**.
-2. Build the APK. An in-place install over v0.1/v0.2 requires the same signing certificate. GitHub debug builds from different runs use different keys; use your original matching signing configuration when available. Do not assume this APK can update an already installed GitHub build.
-3. LSPosed → StrongToast Extended → enable only **System UI** scope. Reboot.
-4. Stop legacy polling loop (`stopToast`), then run `strongtoast -c '#0BFC03' -d 300 'S9_Encryptor'`.
-5. Test A: tap right-side icon, do **not** open panel; Toast should be attempted again after about 5 seconds.
-6. Test B: tap icon, immediately open Notification Shade, hold 10s, close; toast should be attempted about 900ms after closing.
-7. Test C: same with Control Center; then wait for actual 5-minute expiry to verify it does not restart beyond expiry.
+## Install
+
+An in-place update requires the same signing certificate as the installed APK. The existing GitHub workflow creates a new debug key on each runner; the V0.3 GitHub signing key was not retained. This V0.4 GitHub APK therefore cannot directly update an earlier GitHub build. Use your original matching signing configuration if available. Keep System UI scope enabled when testing the module. The legacy `runToast` process is not used in V0.4.
+
+## Test
+
+`strongtoast -c '#0BFC03' -d 300 'S9_Encryptor'`
+
+- Tap right icon -> notification panel open 3s -> close: should recover.
+- Tap right icon -> panel open **15s** -> close: should recover usually within **1–3 seconds**.
+- Tap right icon -> panel open **45s** -> close: same expected.
+- Tap right icon -> Control Center open 20s -> close: should recover.
+- At actual requested expiry, Toast should stop returning.
 
 ## Caveats
 
-- Based on published decompilation of a comparable Xiaomi SystemUI, not a dump from this exact handset. Some callback names may differ and runtime checks still matter.
-- Due to timing/layout differences, **not guaranteed** to restore on every gesture; log lines help identify missing callbacks.
-- The `hideStrongToast` callback might fire for a native timeout or intentionally dismissing an unrelated toast. Time check and active-instance check reduce false restorations. Manual stop should use a short replacement toast or native hide action (v0.3 handles both).
-- The safety timer extends only the hard-coded native 30s watchdog; the normal duration timer still controls expiry.
-- Restarting SystemUI clears cached requests.
-- LSPosed SystemUI hooks may cause instability; have a way to disable the module if necessary.
+This source has not been exercised on the user's firmware. Native reflection fields can differ across ROM revisions. If the SystemUI process crashes repeatedly, disable the module using your Magisk/LSPosed recovery method. Android Java + LSPosed hooks require a device build and testing; local stub compilation is not runtime validation.
 
-## Logs
+Logs: search LSPosed for `StrongToastAutoRestore`; look for `Restore deferred`, `Restore scheduled`, `Restore sent`, `Shade onClosingFinished hook installed`.
 
-In LSPosed logs search for `StrongToastAutoRestore`. Look for:
-- `Captured long toast`
-- `Native toast dismissed`
-- `Restore scheduled`
-- `Restore sent`
-- `Restore deferred`
-
-Source evidence used: native `MIUIStrongToast.hideStrongToast`, `onComplete`, `MIUIStrongToastControl.showCustomStrongToast(Bundle)`, `ShadeExpansionStateManager.updateStateInternal(int)` and `ControlPanelWindowManager.onExpandChange(boolean)` in the Xiaomi decompilation at https://github.com/ymdzq/k60_statusbar_lyric.
-
-## Additional behavior limits
-
-A restore deferred while keyguard is showing has no dedicated unlock retry in this source; another panel-close event may be needed. Partial shade-collapse behavior also depends on the firmware exposing the native panel state fields checked by the hook.
+If both live native state fields and collapse callbacks are unavailable on a firmware, stale fallback panel flags can still defer recovery until the original expiry. Compilation and lint checks do not verify this firmware-specific behavior.
