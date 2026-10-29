@@ -46,14 +46,11 @@ public final class NativeBootstrap {
         }
         try {
             if (Looper.getMainLooper() == null) Looper.prepareMainLooper();
-            Class<?> activityThread = Class.forName("android.app.ActivityThread");
-            Object thread = activityThread.getMethod("systemMain").invoke(null);
-            final Context context = (Context) activityThread.getMethod("getSystemContext").invoke(thread);
             final Handler main = new Handler(Looper.getMainLooper());
             Thread input = new Thread(new Runnable() {
                 @Override public void run() {
                     try {
-                        readRequests(new InputStreamReader(System.in, "UTF-8"), context, main);
+                        readRequests(new InputStreamReader(System.in, "UTF-8"), main);
                     } catch (IOException e) {
                         fail("", "protocol_error", "Bootstrap input closed or exceeded its limit");
                     } finally {
@@ -70,7 +67,7 @@ public final class NativeBootstrap {
         }
     }
 
-    private static void readRequests(Reader input, Context context, Handler main) throws IOException {
+    private static void readRequests(Reader input, Handler main) throws IOException {
         String line;
         while ((line = readLine(input)) != null) {
             String requestId = "";
@@ -92,7 +89,7 @@ public final class NativeBootstrap {
                         fail(requestId, "invalid_nonce", "A valid one-use bootstrap nonce is required");
                         continue;
                     }
-                    bootstrap(requestId, nonce, context, main);
+                    bootstrap(requestId, nonce, main);
                 } else if ("EXIT".equals(operation)) {
                     send(response(requestId, true, "Root bootstrap session closed"));
                     return;
@@ -105,14 +102,29 @@ public final class NativeBootstrap {
         }
     }
 
-    private static void bootstrap(String requestId, final String nonce, final Context context,
-                                  Handler main) throws Exception {
-        final int expectedUid = context.getPackageManager().getApplicationInfo(SYSTEM_UI, 0).uid;
-        final BootstrapCallback callback = new BootstrapCallback(expectedUid);
+    private static Context frameworkContext;
+
+    // systemMain initializes GPU and vendor performance services as if this were
+    // system_server. A headless bootstrap only needs a framework Context.
+    private static Context getFrameworkContext() throws Exception {
+        if (frameworkContext == null) {
+            Class<?> type = Class.forName("android.app.ActivityThread");
+            java.lang.reflect.Constructor<?> constructor = type.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            Object thread = constructor.newInstance();
+            frameworkContext = (Context) type.getMethod("getSystemContext").invoke(thread);
+        }
+        return frameworkContext;
+    }
+
+    private static void bootstrap(String requestId, final String nonce, Handler main) throws Exception {
+        final BootstrapCallback callback = new BootstrapCallback();
         final AtomicBoolean invocationFailed = new AtomicBoolean(false);
         if (!main.post(new Runnable() {
             @Override public void run() {
                 try {
+                    Context context = getFrameworkContext();
+                    callback.expectedUid = context.getPackageManager().getApplicationInfo(SYSTEM_UI, 0).uid;
                     Object manager = context.getSystemService("statusbar");
                     if (manager == null) throw new IllegalStateException("statusbar unavailable");
                     Bundle bundle = new Bundle();
@@ -151,10 +163,8 @@ public final class NativeBootstrap {
     private static final class BootstrapCallback extends Binder {
         final CountDownLatch done = new CountDownLatch(1);
         final AtomicBoolean accepting = new AtomicBoolean(true);
-        final int expectedUid;
+        volatile int expectedUid = -1;
         volatile Bundle acknowledgement;
-
-        BootstrapCallback(int expectedUid) { this.expectedUid = expectedUid; }
 
         @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags)
                 throws RemoteException {

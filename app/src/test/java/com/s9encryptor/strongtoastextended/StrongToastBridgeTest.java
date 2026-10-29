@@ -87,6 +87,26 @@ public final class StrongToastBridgeTest {
         assertNotEquals(Looper.getMainLooper().getThread(), deliveryThreads.poll(3, TimeUnit.SECONDS));
     }
 
+    @Test public void parcelledBroadcastRetainsItsPrivateReplyAndPackage() throws Exception {
+        RecordingContext context = new RecordingContext();
+        call("attach", new Class<?>[]{Context.class}, context);
+        Bundle input = request("GET_CURRENT_STATE", SystemClock.elapsedRealtimeNanos());
+        input.putParcelable("reply", reply);
+        input.putBinder("clientToken", new Binder());
+        Intent outgoing = new Intent(BridgeProtocol.ACTION).setPackage(BridgeProtocol.SYSTEM_UI).putExtras(input);
+        android.os.Parcel parcel = android.os.Parcel.obtain();
+        try {
+            outgoing.writeToParcel(parcel, 0);
+            parcel.setDataPosition(0);
+            Intent delivered = Intent.CREATOR.createFromParcel(parcel);
+            context.receiver.onReceive(context, delivered);
+            Bundle result = takeReply();
+            assertTrue(result.getBoolean("success"));
+            assertTrue(result.getBoolean("moduleActive"));
+            assertEquals(input.getString("requestId"), result.getString("requestId"));
+        } finally { parcel.recycle(); }
+    }
+
     @Test public void staleAndImplausibleMutationSequencesAreRejected() throws Exception {
         long now = SystemClock.elapsedRealtimeNanos();
         execute(request("UPDATE_SETTINGS", now), null);

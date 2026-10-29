@@ -76,7 +76,10 @@ final class StrongToastBridge {
             Class<?> control = XposedHelpers.findClass("com.android.systemui.toast.MIUIStrongToastControl", loader);
             Set<XC_MethodHook.Unhook> hooks = XposedBridge.hookAllConstructors(control, new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam p) {
-                    if (!p.hasThrowable()) captureController(p.thisObject);
+                    if (!p.hasThrowable()) {
+                        for (Object argument : p.args) if (argument instanceof Context) attach((Context) argument);
+                        captureController(p.thisObject);
+                    }
                 }
             });
             capability("controllerConstructor", !hooks.isEmpty());
@@ -91,7 +94,7 @@ final class StrongToastBridge {
         try {
             XposedHelpers.findAndHookMethod("com.android.systemui.SystemUIApplication", loader,
                 "onCreate", new XC_MethodHook() {
-                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
                         try { attach((Context) p.thisObject); } catch (Throwable error) { report("SystemUI context unavailable", error); }
                     }
                 });
@@ -139,6 +142,7 @@ final class StrongToastBridge {
                     else context.registerReceiver(deadlines, wake, null, main);
                 } catch (Throwable ignored) { }
                 capability("receiver", true);
+                XposedBridge.log(TAG + "Protected receiver registered for " + context.getPackageName());
                 publish();
             } catch (Throwable error) { report("Protected command receiver unavailable", error); }
         });
@@ -275,6 +279,16 @@ final class StrongToastBridge {
     static void captureController(Object control) {
         if (control == null) return;
         onMain(() -> {
+            if (!registered) {
+                try {
+                    Object nativeContext = XposedHelpers.getObjectField(control, "mContext");
+                    if (nativeContext instanceof Context) attach((Context) nativeContext);
+                } catch (Throwable ignored) { }
+                try {
+                    Application application = AndroidAppHelper.currentApplication();
+                    if (application != null) attach(application);
+                } catch (Throwable ignored) { }
+            }
             if (nativeController != control) {
                 nativeController = control;
                 publish();

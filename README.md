@@ -1,6 +1,6 @@
 # StrongToast Extended
 
-One native Android APK containing a Kotlin/Jetpack Compose control app and the existing legacy LSPosed module for Xiaomi HyperOS SystemUI. Application ID: `com.s9encryptor.strongtoastextended`; version **1.0.0 (100)**. This continues the V0.7 project in the same package.
+One native Android APK containing a Kotlin/Jetpack Compose control app and the existing legacy LSPosed module for Xiaomi HyperOS SystemUI. Application ID: `com.s9encryptor.strongtoastextended`; version **1.0.1 (101)**. This continues the V0.7 project in the same package.
 
 ## Install and update
 
@@ -41,3 +41,9 @@ Host tests cover validation, real DataStore preset CRUD, MVVM races, command per
 [Migration notes](docs/MIGRATION.md) explain the replaced Termux components. [Dependency audit](docs/DEPENDENCY_AUDIT.md) records the V0.7 baseline. The retained `termux/` directory is historical source, not an application dependency.
 
 If needed, turn off Enhanced effects in Settings, press Stop, or disable the module in LSPosed and reboot. Keep your known-working signed APK for rollback; Android may require uninstalling before installing a lower version code.
+
+## 1.0.1 connection diagnostics
+
+The headless root helper no longer invokes `ActivityThread.systemMain()` (which initializes Xiaomi graphics/performance services); root authorization does not create a framework Context. SystemUI receiver registration starts before Application onCreate and can recover from a captured native controller Context. Commands request foreground broadcast scheduling and diagnostics record whether the app actually holds its control permission. Signature permission enforcement remains unchanged.
+
+After updating the signed APK, reboot before checking connection. Root UID 0 and an enabled LSPosed scope do not establish that the new hook code is loaded. If disconnected, provide the LSPosed module log lines containing StrongToast, including receiver registration or hook-load errors. The reported ENOENT framework traces followed by UID 0 were not proof of root denial. Target-phone connection remains to be rechecked.

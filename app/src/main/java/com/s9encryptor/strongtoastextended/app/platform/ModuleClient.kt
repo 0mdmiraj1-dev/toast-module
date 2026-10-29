@@ -47,7 +47,13 @@ class ModuleClient(context: Context) {
     private var lastRevision = -1L
     private val retiredBoots = LinkedHashSet<String>()
 
-    suspend fun connect(): OperationResult = request("GET_CURRENT_STATE", subscribe = true)
+    suspend fun connect(): OperationResult {
+        val permission = application.checkSelfPermission(BridgeProtocol.PERMISSION)
+        record(if (permission == android.content.pm.PackageManager.PERMISSION_GRANTED)
+            "Control permission granted; querying SystemUI receiver"
+        else "Control permission missing; verify the installed APK manifest and signing update")
+        return request("GET_CURRENT_STATE", subscribe = true)
+    }
 
     suspend fun request(
         command: String,
@@ -92,12 +98,13 @@ class ModuleClient(context: Context) {
         try {
             // Registration's sender permission authenticates this app's signature. A receiver
             // permission here would incorrectly require SystemUI to own our app permission.
-            application.sendBroadcast(Intent(BridgeProtocol.ACTION).setPackage(BridgeProtocol.SYSTEM_UI).putExtras(outgoing))
+            application.sendBroadcast(Intent(BridgeProtocol.ACTION).setPackage(BridgeProtocol.SYSTEM_UI)
+                .addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES).putExtras(outgoing))
             withTimeout(REQUEST_TIMEOUT_MS) { entry.result.await() }
         } catch (timeout: TimeoutCancellationException) {
             record("Module did not acknowledge the request before its deadline")
-            invalidate("The SystemUI module did not respond. Enable its System UI scope and reconnect.", sendUnsubscribe = true)
-            OperationResult(false, "The SystemUI module did not respond. Enable its System UI scope and reconnect.")
+            invalidate("SystemUI did not reply. Reboot after installing the module, then reconnect. If it persists, check LSPosed module logs.", sendUnsubscribe = true)
+            OperationResult(false, "SystemUI did not reply. Reboot after installing the module, then reconnect. If it persists, check LSPosed module logs.")
         } catch (cancelled: CancellationException) {
             if (subscribe) clearSubscription(entry)
             throw cancelled
@@ -259,7 +266,8 @@ class ModuleClient(context: Context) {
                     putBinder("clientToken", token)
                     putParcelable("reply", object : ResultReceiver(null) {})
                 }
-                application.sendBroadcast(Intent(BridgeProtocol.ACTION).setPackage(BridgeProtocol.SYSTEM_UI).putExtras(payload))
+                application.sendBroadcast(Intent(BridgeProtocol.ACTION).setPackage(BridgeProtocol.SYSTEM_UI)
+                .addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES).putExtras(payload))
             }
         }
     }
