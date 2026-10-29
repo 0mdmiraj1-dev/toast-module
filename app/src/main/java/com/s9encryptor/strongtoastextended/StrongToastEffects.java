@@ -2,6 +2,11 @@ package com.s9encryptor.strongtoastextended;
 
 import android.animation.ObjectAnimator;
 import android.content.Context;
+import android.app.NotificationManager;
+import android.os.Bundle;
+import android.os.Build;
+import android.os.VibrationAttributes;
+import android.text.Spannable;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.text.TextPaint;
@@ -26,7 +31,6 @@ final class StrongToastEffects {
     private static final long TIMER_FRAME_MS = 120L;
     private static final long ALERT_MS = 30_000L;
     private static final int MAX_RAINBOW_SEGMENTS = 90;
-    private static final int FIT_MAX_CODEPOINTS = 26;
     private static Session session;
     private static int nextId = 1;
 
@@ -39,6 +43,13 @@ final class StrongToastEffects {
         Session s = new Session(mode, normalizeStyle(style), control, handler,
             deadlineElapsed, countdownMs, nextId++);
         session = s;
+        applyOptions(s, StrongToastHook.currentRequestCopy());
+        s.expiry = () -> { if (session == s) { StrongToastHook.checkElapsedDeadline(); stop(); } };
+        handler.postDelayed(s.expiry, Math.max(1L, deadlineElapsed - SystemClock.elapsedRealtime()));
+        if ("timer".equals(mode)) {
+            s.alert = () -> { if (session == s && SystemClock.elapsedRealtime() < s.deadline) beginAlert(s); };
+            handler.postDelayed(s.alert, Math.max(1L, s.countdownEnd - SystemClock.elapsedRealtime()));
+        }
         schedule(s, 140L);
         XposedBridge.log(TAG + "started mode=" + mode + " style=" + s.style +
             " countdownMs=" + countdownMs + " expiry=" + deadlineElapsed);
@@ -50,9 +61,19 @@ final class StrongToastEffects {
         s.paused = true;
         if (s.frame != null) s.handler.removeCallbacks(s.frame);
         s.frame = null;
+        releaseNativeView(s);
         s.view = null;
         s.spans = null;
-        s.textFitComplete = false;
+    }
+
+    /** Handler delays use uptime; reconcile elapsed deadlines when the screen wakes. */
+    static void onScreenWake() {
+        Session s = session;
+        if (s == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (now >= s.deadline) { StrongToastHook.checkElapsedDeadline(); stop(); return; }
+        if ("timer".equals(s.mode) && now >= s.countdownEnd && !s.alertStarted) beginAlert(s);
+        if (!s.paused) schedule(s, 1L);
     }
 
     static void resume(Object control) {
@@ -60,12 +81,11 @@ final class StrongToastEffects {
         if (s == null) return;
         s.control = control;
         s.paused = false;
+        releaseNativeView(s);
         s.view = null;
         s.spans = null;
         s.previousSeconds = -1;
         s.previousColor = 0;
-        s.textFitComplete = false;
-        s.textFitAttempts = 0;
         schedule(s, 200L);
     }
 
@@ -75,7 +95,10 @@ final class StrongToastEffects {
         if (s == null) return;
         s.paused = true;
         if (s.frame != null) s.handler.removeCallbacks(s.frame);
+        if (s.alert != null) s.handler.removeCallbacks(s.alert);
+        if (s.expiry != null) s.handler.removeCallbacks(s.expiry);
         s.frame = null;
+        releaseNativeView(s);
         s.view = null;
         s.spans = null;
         stopOwnedVibration(s);
@@ -99,14 +122,17 @@ final class StrongToastEffects {
         final int id;
         TextView view;
         Runnable frame;
+        Runnable alert, expiry;
+        boolean reducedMotion, vibrationEnabled = true, shakeEnabled = true;
+        TextView shakeView;
+        float shakeOrigin;
         RainbowSpan[] spans;
         boolean rainbowFallback;
         float phase;
         int previousSeconds = -1;
         int previousColor;
         boolean paused;
-        boolean textFitComplete;
-        int textFitAttempts;
+        NativeTextLayout.Binding layout;
         boolean alertStarted;
         boolean vibrating;
         Vibrator vibrator;
@@ -121,7 +147,8 @@ final class StrongToastEffects {
             this.createdAt = SystemClock.elapsedRealtime();
             this.deadline = deadline;
             this.countdownDuration = Math.max(1000L, countdownMs);
-            this.countdownEnd = "timer".equals(mode) ? Math.min(deadline, createdAt + this.countdownDuration) : deadline;
+            long original = StrongToastHook.originalCountdownEndElapsed();
+            this.countdownEnd = "timer".equals(mode) ? Math.min(deadline, original > 0L ? original : createdAt + this.countdownDuration) : deadline;
             this.id = id;
         }
     }
@@ -160,7 +187,7 @@ final class StrongToastEffects {
 
     private static void frame(Session s) {
         long now = SystemClock.elapsedRealtime();
-        if (now >= s.deadline) { stop(); return; }
+        if (now >= s.deadline) { StrongToastHook.checkElapsedDeadline(); stop(); return; }
         if ("timer".equals(s.mode) && now >= s.countdownEnd && !s.alertStarted)
             beginAlert(s);
         if (!bindView(s)) {
@@ -168,23 +195,23 @@ final class StrongToastEffects {
             return;
         }
         if ("rgb".equals(s.mode)) {
-            fitShortStyledText(s);
+            if (s.layout != null) s.layout.refresh();
             updateRainbow(s, now);
-            schedule(s, RGB_FRAME_MS);
+            if (!s.reducedMotion) schedule(s, RGB_FRAME_MS);
         } else if ("timer".equals(s.mode)) {
             if (s.alertStarted) {
                 showTimeOver(s);
                 schedule(s, 250L);
             } else {
                 drawCountdown(s, s.countdownEnd - now);
-                fitShortStyledText(s);
+                if (s.layout != null) s.layout.refresh();
                 schedule(s, TIMER_FRAME_MS);
             }
         } else {
             // Styled mode normally has no animation. Retry fitting until layout
             // reports a non-zero width; no repeating root calls or view recreation.
-            fitShortStyledText(s);
-            if (!s.textFitComplete && s.textFitAttempts < 15) schedule(s, 200L);
+            if (s.layout != null) s.layout.refresh();
+
         }
     }
 
@@ -197,13 +224,13 @@ final class StrongToastEffects {
             if (!(left instanceof TextView)) return false;
             TextView view = (TextView) left;
             if (s.view != view) {
+                releaseNativeView(s);
                 s.view = view;
+                s.layout = prepareNativeLayout(toast);
                 s.spans = null;
                 s.rainbowFallback = false;
                 s.previousSeconds = -1;
                 s.previousColor = 0;
-                s.textFitComplete = false;
-                s.textFitAttempts = 0;
                 setStyle(view, s.style);
                 if ("rgb".equals(s.mode)) installRainbow(s);
                 XposedBridge.log(TAG + "bound mode=" + s.mode + " style=" + s.style);
@@ -219,76 +246,19 @@ final class StrongToastEffects {
         view.setTypeface(view.getTypeface(), mode);
     }
 
-    /**
-     * Native StrongToast may allocate a narrow TextView even when the status bar
-     * has spare screen space. Bold/italic glyphs are wider than normal glyphs,
-     * so short strings can get truncated with "..". Fit only short styled text.
-     *
-     * Do not widen SystemUI's icon/parent containers: their measurements and
-     * touch regions are ROM-dependent. Do not replace text on every frame.
-     */
-    private static void fitShortStyledText(Session s) {
-        if (s.view == null || s.textFitComplete) return;
-        TextView view = s.view;
-        String content = view.getText().toString();
-        if (content.isEmpty()) return;
-        if ("normal".equals(s.style) || content.indexOf('\n') >= 0 ||
-            content.codePointCount(0, content.length()) > FIT_MAX_CODEPOINTS) {
-            s.textFitComplete = true; // preserve native marquee for long text
-            return;
-        }
-        // The native toast's width can change during its entrance animation.
-        // Wait for a measured layout instead of guessing screen-wide space.
-        int width = view.getWidth();
-        if (width <= 0) {
-            s.textFitAttempts++;
-            if (s.textFitAttempts >= 15) s.textFitComplete = true;
-            return;
-        }
-        float density = view.getResources().getDisplayMetrics().density;
-        float available = width - view.getCompoundPaddingLeft() -
-            view.getCompoundPaddingRight() - (2f * density);
-        if (available <= 0f) {
-            s.textFitComplete = true;
-            return;
-        }
-        TextPaint paint = view.getPaint();
-        float required = paint.measureText(content);
-        if (required <= available) {
-            s.textFitComplete = true;
-            return;
-        }
-        float originalPx = view.getTextSize();
-        Typeface originalFace = view.getTypeface();
-        int styleFlag = "bold".equals(s.style) ? Typeface.BOLD : Typeface.ITALIC;
-        Typeface condensed = Typeface.create("sans-serif-condensed", styleFlag);
-        if (condensed != null) {
-            view.setTypeface(condensed);
-            float condensedWidth = view.getPaint().measureText(content);
-            if (condensedWidth < required) {
-                required = condensedWidth;
-            } else {
-                // Don't swap fonts if the ROM has no narrower condensed face.
-                view.setTypeface(originalFace);
-            }
-        }
-        if (required > available) {
-            // Only scale short labels by a modest amount. If the text would
-            // need to be tiny, leave it to the native marquee instead.
-            float factor = available / required;
-            if (factor >= .78f) {
-                view.setTextSize(TypedValue.COMPLEX_UNIT_PX,
-                    originalPx * factor * .985f);
-            } else {
-                view.setTypeface(originalFace);
-                XposedBridge.log(TAG + "short text exceeds safe fit range; " +
-                    "preserving readable size for marquee");
-            }
-        }
-        s.textFitComplete = true;
-        XposedBridge.log(TAG + "short text fit completed style=" + s.style +
-            " availablePx=" + available + " measuredPx=" + required +
-            " finalTextSizePx=" + view.getTextSize());
+    static NativeTextLayout.Binding prepareNativeLayout(Object toast) {
+        try {
+            Object text = XposedHelpers.getObjectField(toast, "mLeftTextView");
+            if (!(text instanceof TextView) || !(toast instanceof View)) return null;
+            View left = null, right = null;
+            try { left = (View)XposedHelpers.getObjectField(toast, "mRLLeft"); } catch (Throwable ignored) { }
+            try { right = (View)XposedHelpers.getObjectField(toast, "mRLRight"); } catch (Throwable ignored) { }
+            return NativeTextLayout.bind((TextView)text, (View)toast, left, right);
+        } catch (Throwable ignored) { return null; }
+    }
+
+    private static void releaseLayout(Session session) {
+        if (session.layout != null) { session.layout.close(); session.layout = null; }
     }
 
     private static void installRainbow(Session s) {
@@ -321,7 +291,7 @@ final class StrongToastEffects {
 
     private static void updateRainbow(Session s, long now) {
         if (s.view == null) return;
-        s.phase = ((now - s.createdAt) % 6200L) / 6200f;
+        s.phase = s.reducedMotion ? 0f : ((now - s.createdAt) % 6200L) / 6200f;
         if (s.rainbowFallback || s.spans == null) {
             // Visible fallback if the ROM rejects colored CharacterStyle spans.
             s.view.setTextColor(Color.HSVToColor(new float[]{360f * s.phase, 1f, 1f}));
@@ -359,15 +329,24 @@ final class StrongToastEffects {
         s.alertStarted = true;
         s.previousSeconds = -1;
         XposedBridge.log(TAG + "Timer expired. Start Time over! + 30s vibration");
+        if (!s.vibrationEnabled) return;
         try {
             Object toast = XposedHelpers.getObjectField(s.control, "mMiuiStrongToastCallBack");
             Context context = toast instanceof View ? ((View)toast).getContext() : null;
             if (context != null) {
+                NotificationManager notifications = (NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
+                if (notifications != null && notifications.getCurrentInterruptionFilter() != NotificationManager.INTERRUPTION_FILTER_ALL) {
+                    XposedBridge.log(TAG + "Vibration suppressed by device DND policy"); return;
+                }
                 Vibrator vib = (Vibrator)context.getSystemService(Context.VIBRATOR_SERVICE);
                 if (vib != null && vib.hasVibrator()) {
                     s.vibrator = vib;
-                    long time = Math.min(ALERT_MS, Math.max(1000L, s.deadline - SystemClock.elapsedRealtime()));
-                    vib.vibrate(VibrationEffect.createOneShot(time, VibrationEffect.DEFAULT_AMPLITUDE));
+                    long time = Math.min(ALERT_MS, s.deadline - SystemClock.elapsedRealtime());
+                    if (time <= 0L) return;
+                    VibrationEffect effect = VibrationEffect.createOneShot(time, VibrationEffect.DEFAULT_AMPLITUDE);
+                    if (Build.VERSION.SDK_INT >= 33) vib.vibrate(effect,
+                        new VibrationAttributes.Builder().setUsage(VibrationAttributes.USAGE_NOTIFICATION).build());
+                    else vib.vibrate(effect);
                     s.vibrating = true;
                 }
             }
@@ -382,24 +361,55 @@ final class StrongToastEffects {
         if (!"Time over!".contentEquals(v.getText())) {
             v.setText("Time over!");
             v.setTextColor(Color.RED);
-            shake(v, s);
+            if (s.shakeEnabled && !s.reducedMotion) shake(v, s);
         }
     }
 
     private static void shake(TextView v, Session s) {
-        if (s.shake != null) { try { s.shake.cancel(); } catch (Throwable ignored) { } }
+        cancelShake(s);
         try {
+            s.shakeView = v;
+            s.shakeOrigin = v.getTranslationX();
             float d = v.getResources().getDisplayMetrics().density;
             float x = 9f * d;
             s.shake = ObjectAnimator.ofFloat(v, View.TRANSLATION_X,
-                0f, -x, x, -x*.8f, x*.8f, -x*.5f, x*.5f, 0f);
+                s.shakeOrigin, s.shakeOrigin-x, s.shakeOrigin+x, s.shakeOrigin-x*.8f,
+                s.shakeOrigin+x*.8f, s.shakeOrigin-x*.5f, s.shakeOrigin+x*.5f, s.shakeOrigin);
             s.shake.setDuration(1100L);
             s.shake.start();
         } catch (Throwable e) { XposedBridge.log(TAG + "shake unavailable: " + e); }
     }
 
+    static void updateOptions(Bundle options) {
+        Session s = session;
+        if (s == null) return;
+        applyOptions(s, options);
+        if (!s.vibrationEnabled) stopOwnedVibration(s);
+        if (!s.shakeEnabled || s.reducedMotion) cancelShake(s);
+        if (!s.paused) schedule(s, 1L);
+    }
+    private static void applyOptions(Session s, Bundle options) {
+        if (options == null) return;
+        s.reducedMotion = options.getBoolean("s9_reduced_motion", false);
+        s.vibrationEnabled = options.getBoolean("s9_vibration", true);
+        s.shakeEnabled = options.getBoolean("s9_shake", true);
+    }
+    private static void cancelShake(Session s) {
+        if (s.shake != null) { try { s.shake.cancel(); } catch (Throwable ignored) { } s.shake = null; }
+        if (s.shakeView != null) { try { s.shakeView.setTranslationX(s.shakeOrigin); } catch (Throwable ignored) { } s.shakeView = null; }
+    }
+    private static void releaseNativeView(Session s) {
+        cancelShake(s);
+        if (s.view != null && s.view.getText() instanceof Spannable) {
+            Spannable text = (Spannable)s.view.getText();
+            for (RainbowSpan span : text.getSpans(0, text.length(), RainbowSpan.class))
+                if (span.owner == s) text.removeSpan(span);
+        }
+        releaseLayout(s);
+    }
+
     private static void stopOwnedVibration(Session s) {
-        if (s.shake != null) { try { s.shake.cancel(); } catch (Throwable ignored) {} s.shake = null; }
+        cancelShake(s);
         if (s.vibrating && s.vibrator != null) {
             try { s.vibrator.cancel(); } catch (Throwable ignored) {}
         }

@@ -1,18 +1,21 @@
-name: Build StrongToast APK
+name: Build StrongToast unsigned APK
 
 on:
   push:
-    branches:
-      - 'apk-build/**'
+    branches: ['apk-build/**']
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: unsigned-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -24,30 +27,47 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-35 build-tools;34.0.0'
+          packages: 'platforms;android-37.0 build-tools;36.0.0'
           log-accepted-android-sdk-licenses: false
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-      - name: Build APK and run Android lint
+      - name: Test, lint and build unsigned release
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon --console=plain :app:assembleDebug :app:lintDebug
-      - name: Verify APK signature and record checksum
+          ./gradlew --no-daemon --console=plain :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintRelease :app:assembleRelease
+      - name: Verify APK contents and unsigned delivery
         run: |
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk
-          sha256sum app/build/outputs/apk/debug/*.apk | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Upload installable debug APK
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          python3 scripts/verify_apk.py "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" > apk-badging.txt
+          head -n 1 apk-badging.txt | grep -F "name='com.s9encryptor.strongtoastextended' versionCode='100' versionName='1.0.0'"
+          grep -F "launchable-activity: name='com.s9encryptor.strongtoastextended.app.MainActivity'" apk-badging.txt
+          if "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify "$APK" > apk-signature.txt 2>&1; then
+            echo 'Expected an unsigned release; refusing a pre-signed artifact.'
+            exit 1
+          fi
+          sha256sum "$APK" | tee app/build/outputs/apk/release/SHA256SUMS | tee -a "$GITHUB_STEP_SUMMARY"
+          echo 'Unsigned APK: sign with the installed module certificate before installing.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload unsigned release APK
         uses: actions/upload-artifact@v4
         with:
-          name: StrongToast-Extended-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: StrongToast-Extended-unsigned
+          path: |
+            app/build/outputs/apk/release/app-release-unsigned.apk
+            app/build/outputs/apk/release/SHA256SUMS
           if-no-files-found: error
-          retention-days: 14
-      - name: Upload lint report
+          retention-days: 30
+      - name: Upload test and lint reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Android-lint-report
-          path: app/build/reports/lint-results-debug.*
+          name: StrongToast-verification-reports
+          path: |
+            app/build/reports/tests/
+            app/build/reports/native-ui/
+            app/build/test-results/
+            app/build/reports/lint-results-release.*
+            apk-badging.txt
+            apk-signature.txt
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 30
