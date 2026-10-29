@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.VIBRATE" />
     <application
         android:allowBackup="false"
         android:hasCode="true"
         android:label="StrongToast Extended"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <meta-data android:name="xposedmodule" android:value="true" />
-        <meta-data android:name="xposeddescription" android:value="Extend StrongToast duration; restore after shade dismiss; RGB text and live timer" />
+        <meta-data android:name="xposeddescription" android:value="Extend StrongToast duration; restore after shade dismiss; animated RGB spans, styled text, timer + vibration alert" />
         <meta-data android:name="xposedminversion" android:value="82" />
         <meta-data android:name="xposedscope" android:value="com.android.systemui" />
     </application>

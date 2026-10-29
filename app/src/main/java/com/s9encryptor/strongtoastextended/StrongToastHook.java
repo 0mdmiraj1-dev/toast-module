@@ -13,7 +13,7 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * HyperOS 1 / Android 13 LSPosed SystemUI-only module (V0.5).
+ * HyperOS 1 / Android 13 LSPosed SystemUI-only module (V0.6).
  *
  * 1) Keep the proven 65-minute independent onAttachedToWindow() watchdog hook.
  * 2) Capture long text_bitmap Strong Toasts (61-3600 seconds).
@@ -22,7 +22,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 4) When a panel opens, keep a low-overhead deferred native state check until it closes.
  * 5) If the toast was manually dismissed but no panel is opened, retry after 5s.
  * 6) Restore only the REMAINING duration (clock: elapsedRealtime), without su.
- * 7) Optional on-device RGB rainbow text and 1-second countdown effects.
+ * 7) Native rainbow spans, text styles, countdown and 30-second timer expiry alarm.
  *
  * All mutable state is confined to SystemUI's main looper. Does not
  * intercept external arbitrary notifications or make the toast non-dismissible.
@@ -31,7 +31,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
     private static final String TAG = "[StrongToastAutoRestore] ";
     private static final String SYSUI = "com.android.systemui";
     private static final long WATCHDOG_MS = 65L * 60_000L;
-    private static final long MAX_STICKY_MS = 60L * 60_000L;
+    private static final long MAX_STICKY_MS = 60L * 60_000L + 30_000L;
     private static final long MIN_STICKY_MS = 60_000L;
     private static final long COLLAPSE_RESTORE_DELAY_MS = 900L;
     private static final long DISMISS_RESTORE_DELAY_MS = 5_000L;
@@ -57,7 +57,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
         installNativeHideEvents(param.classLoader);
         installShadeEvents(param.classLoader);
         installControlCenterEvents(param.classLoader);
-        XposedBridge.log(TAG + "V0.5 ready (V0.4 recovery + optional RGB/timer effects)");
+        XposedBridge.log(TAG + "V0.6 ready (native rainbow spans + styles + timer expiry alert)");
     }
 
     private static void onMain(Runnable action) {
@@ -101,7 +101,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
                                 // Do not replay a different app's old toast over a new request.
                                 if (saved != null) clearCache("replaced by another request");
                                 String effect = request.getString("s9_mode", "");
-                                boolean effectMode = "rgb".equals(effect) || "timer".equals(effect);
+                                boolean effectMode = "rgb".equals(effect) || "timer".equals(effect) || "styled".equals(effect);
                                 if (!"text_bitmap".equals(category) || pkg.isEmpty() ||
                                     duration < (effectMode ? 1_000L : MIN_STICKY_MS + 1L) ||
                                     duration > MAX_STICKY_MS) return;
@@ -111,7 +111,8 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
                                 nativeDismissed = false;
                                 generation++;
                                 XposedBridge.log(TAG + "Captured toast durationMs=" + duration + " effect=" + effect);
-                                StrongToastEffects.start(effect, control, main, expiresAt);
+                                StrongToastEffects.start(effect, request.getString("s9_style", "normal"),
+                                    request.getLong("s9_countdown_ms", duration), control, main, expiresAt);
                             }
                         });
                     }

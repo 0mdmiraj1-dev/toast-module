@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Install separate app_process client for V0.5. Leaves existing strongtoast untouched.
+# Install separate app_process client for V0.6. Leaves existing strongtoast untouched.
 set -euo pipefail
 : "${PREFIX:?Run under Termux, not a root shell}"
 base_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -34,8 +34,8 @@ d8 --min-api 26 --output "$work/dex" "$work/classes/S9ToastModes.class"
 echo '[2/3] Copy DEX as root (one Magisk grant)...'
 su -c "mkdir -p /data/local/tmp/s9-toast-modes && cp '$work/dex/classes.dex' /data/local/tmp/s9-toast-modes/classes.dex.new && chmod 644 /data/local/tmp/s9-toast-modes/classes.dex.new && mv -f /data/local/tmp/s9-toast-modes/classes.dex.new /data/local/tmp/s9-toast-modes/classes.dex"
 echo '[3/3] Install commands...'
-for cmd in s9-toast-client strongtoastRGB toastTimer stopToastTimer; do
+for cmd in s9-toast-client strongtoastRGB strongtoastStyled toastTimer stopToastTimer; do
   install -m 755 "$base_dir/$cmd" "$PREFIX/bin/$cmd"
 done
-echo 'Ready: strongtoastRGB [-d seconds] "text" | toastTimer 30 | stopToastTimer'
+printf '%s\n' "Ready: strongtoastRGB -s bold -d 120 \"text\" | strongtoastStyled -s italic -c '#0BFC03' \"text\" | toastTimer -s bold 30 | stopToastTimer"
 echo 'Your original strongtoast command was NOT modified.'

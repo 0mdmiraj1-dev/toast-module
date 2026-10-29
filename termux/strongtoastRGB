@@ -1,12 +1,17 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
-seconds=1800
-if [[ ${1:-} == -d ]]; then
-  [[ $# -ge 3 ]] || { echo 'Usage: strongtoastRGB [-d seconds] "message"' >&2; exit 2; }
-  seconds=$2; shift 2
-fi
-[[ "$seconds" =~ ^[0-9]{1,4}$ ]] || { echo 'Duration must be 1–3600 seconds' >&2; exit 2; }
+seconds=1800; style=normal
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d) [[ $# -ge 2 ]] || { echo 'Missing seconds' >&2; exit 2; }; seconds=$2; shift 2 ;;
+    -s|--style) [[ $# -ge 2 ]] || { echo 'Missing style' >&2; exit 2; }; style=${2,,}; shift 2 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+[[ $seconds =~ ^[0-9]{1,4}$ ]] || { echo 'Duration must be 1-3600 seconds' >&2; exit 2; }
 seconds=$((10#$seconds))
-((seconds >= 1 && seconds <= 3600)) || { echo 'Duration must be 1–3600 seconds' >&2; exit 2; }
-(( $# > 0 )) || { echo 'Usage: strongtoastRGB [-d seconds] "message"' >&2; exit 2; }
-exec "${PREFIX}/bin/s9-toast-client" rgb "$seconds" "$*"
+((seconds >= 1 && seconds <= 3600)) || { echo 'Duration must be 1-3600 seconds' >&2; exit 2; }
+[[ $style =~ ^(normal|bold|italic)$ ]] || { echo 'Style must be normal, bold, or italic' >&2; exit 2; }
+(( $# > 0 )) || { echo 'Usage: strongtoastRGB [-d seconds] [-s normal|bold|italic] "text"' >&2; exit 2; }
+exec "${PREFIX}/bin/s9-toast-client" rgb "$seconds" "$*" "$style" -1

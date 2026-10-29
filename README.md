@@ -1,67 +1,69 @@
-# StrongToast Auto-Restore V0.5 — RGB + Timer
+# StrongToast Extended V0.6 — Rainbow Fix, Text Styles, Timer Alert
 
-Experimental V0.5 update for the HyperOS 1 / Android 13 LSPosed module. Gradle build and Android lint are checked for the repository build; device behavior remains unverified.
+Target: rooted HyperOS 1 / Android 13, SystemUI LSPosed scope.
 
-**V0.5 adds only feature 2 and feature 3.** Long status text continues to start marquee from the beginning after native restore (unchanged). Preserve existing 65-minute watchdog, notification/control panel restoration, cache, and expiry logic.
+## Changes since V0.5
 
-## Included files
+- **RGB fix**: native `TextView` no longer relies on an animated `LinearGradient` local matrix. Installs up to 90 per-segment Android `CharacterStyle` spans (each spans one/multiple Unicode codepoints), draws an animated HSV rainbow via `updateDrawState()` and redraws in place. This avoids replacing the string every frame and is less likely to reset the native marquee. A full-text hue cycle is used if span creation fails.
+- **Text styles**: `normal`, `bold`, `italic` via `TextView.setTypeface()` once per native binding. This works for RGB, standard styled status, and timer.
+- **Timer expiry**: when the countdown hits 00:00, the same Strong Toast displays `Time over!` in red and shakes for ~1.1s; the phone requests **30 seconds of vibration** via `VibrationEffect`. Original timer native request is extended by 30s to keep the alert visible. `stopToastTimer` cancels the ongoing module-owned vibration and native Strong Toast. Device policy, DND, hardware, SystemUI context, or ROM may reject/suppress vibration.
+- Preserves V0.4 native 65-minute watchdog and Notification Panel / Control Center / icon-dismiss restore logic. Preserves original `strongtoast` and its DEX, without overwriting them.
 
-- `app/src/main/java/com/s9encryptor/strongtoastextended/StrongToastHook.java` — V0.4 with small integration points for effect sessions
-- `app/src/main/java/com/s9encryptor/strongtoastextended/StrongToastEffects.java` — new SystemUI-side shader animation and timer updating
-- `termux/S9ToastModes.java` — **separate** standalone app_process helper using the same private StatusBar API, **does not modify** existing StrongToast.java or strongtoast DEX
-- `termux/install_modes.sh` and command launchers — separate Termux commands
+## Install (Codex / Android Studio)
 
-## Module install
+The project keeps package ID `com.s9encryptor.strongtoastextended`, its Xposed entrypoint, and System UI scope. In-place updates require the same signing certificate as the installed APK. The current GitHub workflow creates a fresh debug signing key on each runner, and the previous GitHub signing key was not retained. This APK cannot directly update an earlier GitHub build; use your original matching signing configuration when available.
 
-The applicationId remains `com.s9encryptor.strongtoastextended`, with the existing Xposed entrypoint and System UI scope. The APK includes `StrongToastEffects.java`. Enable the module for System UI and reboot when testing.
+1. Build an APK from this source; `app/build.gradle` sets versionCode 6 / versionName 0.6 and the Android manifest includes `android.permission.VIBRATE`.
+2. Install/update APK; LSPosed scope **only System UI** (`com.android.systemui`); reboot.
+3. Extract ZIP on Android into Downloads, then run:
 
-An in-place update requires the same signing certificate as the installed APK. The current GitHub workflow creates a new debug signing key for each run, and the previous GitHub key was not retained. This APK cannot directly update an earlier GitHub build. Use your original matching signing configuration when available. Keep a recovery path to disable the module if SystemUI becomes unstable.
-
-## Install Termux clients
-
-Extract ZIP into Termux-accessible Downloads (Termux storage permission should be granted):
-
-```bash
-pkg install unzip python openjdk-17 d8
-unzip -o ~/storage/downloads/HyperOSStrongToastAutoRestore_v05_Source.zip -d ~/storage/downloads/
-bash ~/storage/downloads/HyperOSStrongToastAutoRestore_v05/termux/install_modes.sh
+```sh
+bash ~/storage/downloads/HyperOSStrongToastAutoRestore_v06/termux/install_modes.sh
 ```
 
-This installer builds a new `/data/local/tmp/s9-toast-modes/classes.dex`, creates `strongtoastRGB`, `toastTimer`, `stopToastTimer` and `s9-toast-client`, and copies drawable info from `~/.strongtoast-build/StrongToast.java` (including HyperCeiler custom icon). It **does not modify** your existing `strongtoast`/`runToast` commands or their DEX.
+### Commands
 
-## Commands
+```sh
+# Moving rainbow / RGB animated status
+strongtoastRGB -d 120 -s bold "@S9_Encryptor | RGB Test"
+strongtoastRGB -s italic -d 120 "Italic rainbow"
+strongtoastRGB -s normal -d 120 "Normal rainbow"
 
-```bash
-strongtoastRGB -d 300 'S9_Encryptor Rainbow'
-strongtoastRGB -d 1800 'Long scrolling developer quote...'
+# Plain-color status with styles; original `strongtoast` command unchanged
+strongtoastStyled -s normal -c '#0BFC03' -d 180 "Normal green"
+strongtoastStyled -s bold -c '#0BFC03' -d 180 "Bold green"
+strongtoastStyled -s italic -c '#ff05b0' -d 180 "Italic magenta"
+
+# Countdown: 60s countdown + 30s Time over alert + vibration
+# Use a short, deliberate test because the expiry alarm may vibrate for 30s.
+toastTimer -s bold 1
+toastTimer -s italic 1
 toastTimer 30
 stopToastTimer
 ```
 
-- `strongtoastRGB` default duration is 1800s, can use `-d 1..3600`.
-- `toastTimer N` takes `N` minutes 1..60. Initial text displays `Remaining MM:SS`, and updates once per second without creating a new Toast.
-- Timer uses `SystemClock.elapsedRealtime()` and the **original** deadline captured when first displayed. Restoring a dismissed Toast doesn't restart the countdown.
-- Hue transition: green until 35% left, smooth green→orange during 35%→33%; orange until 17%, smooth orange→red during 17%→15%; red until end.
-- `stopToastTimer` sends native `hide_strong_toast` **for the current Strong Toast**, so it can also hide an RGB status if one is currently displayed.
-- RGB is a moving repeating multi-color shader on the native `mLeftTextView`, ~15 frames/sec. The existing native scrolling/marquee behavior continues; after a new View is created, marquee restarts at the beginning.
-- When panels are open, the V0.4 native recovery logic controls visibility. No recurring Termux root calls are needed. The modes client needs `su` once at startup/stop only.
+### Timer color phases
 
-## Tests after installation
+- 40% → 33% remaining: smooth green → orange transition.
+- 21% → 15% remaining: smooth orange → red transition.
+- At zero: `Time over!`, red text, shake, 30 seconds of vibration (permission/device permitting), then native Toast clears.
+- The timer uses elapsed monotonic time, not one-second request loops. During native dismissal/recovery, clock doesn't restart.
 
-1. `strongtoastRGB -d 120 'S9 RGB TEST'` → verify gradient moves visibly and duration stays >30s.
-2. Right icon tap → wait 5–7s → verify RGB returns.
-3. RGB → icon tap → notification shade open 15–45s → close → verify restore; note marquee restarts.
-4. `toastTimer 2` → verify text shows `Remaining 02:00` then `01:59` and decreases while switching apps.
-5. Timer → icon tap → shade open 15s → close → verify it returns at **remaining** time, not reset.
-6. Short development test for color transition: `toastTimer 1`; green→orange near 20s left, orange→red near 9s left.
-7. `stopToastTimer` → verify current toast hides without coming back.
+## Diagnostics
 
-## Debugging
+- `Strong Toast ... request sent` **only confirms the call**, not that the SystemUI hook applied. Confirm the rainbow actually changes over 6 seconds.
+- LSPosed logs: search `[StrongToastEffects]`, `[StrongToastAutoRestore]`.
+  - `Rainbow spans installed count=...` means the new per-segment painter was attached.
+  - `Rainbow spans failed; hue-cycling fallback` indicates fallback.
+  - `Timer expired. Start Time over! + 30s vibration` means the alert handler ran.
+  - `Vibration unavailable` means device/permission/DND/ROM issues; do not disable DND automatically.
+- For troubleshooting accidental repeated root dialogs, trigger one `strongtoastRGB` and do not run the legacy 28s `runToast` poller simultaneously.
+- If SystemUI crashes or becomes unstable: disable the updated module in LSPosed and reboot/revert to V0.5.
 
-In LSPosed logs search `StrongToastAutoRestore` or `StrongToastEffects`.
+## Test status
 
-Termux helper stderr: `cat ~/.strongtoast-modes/last-error.log`.
+- Expiry effects pause while the native toast is dismissed. A timer expiring during prolonged panel use may delay vibration until restoration, or skip it if the original alert window has already ended.
+- Cancelling a shake can leave the current horizontal offset if the firmware reuses that TextView without resetting it.
 
-## Safety/limitations
-
-Not tested on the user's device yet. The repository builds a signed debug APK with the Android SDK and Xposed API; compilation and lint checks do not validate firmware behavior. Xiaomi ROM field names can differ. Shader rendering and timing are **experimental** until device testing. This module does not survive SystemUI process death with its mode/deadline state; re-run the client after such a restart. The native source is not a public Android API. Use LSPosed recovery to disable the module if SystemUI fails repeatedly.
+- The repository build uses the actual Android SDK, Gradle, Xposed API, Android lint, and APK signature verification. Termux helpers are checked separately.
+- **No physical device runtime test** was performed. Rainbow spans, TextView styling, vibration behavior, and native/LSPosed compatibility depend on your ROM. Treat the behavior as experimental and keep a working previous APK for rollback.

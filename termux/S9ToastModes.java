@@ -28,13 +28,13 @@ public final class S9ToastModes {
         m.invoke(manager, 1, "strong_toast_action", b);
     }
     public static void main(String[] args) {
-        if (args.length != 6) {
-            System.err.println("Usage: S9ToastModes <rgb|timer|stop> <base64-text|-> <sec> <pkg> <icon> <png|svg>");
+        if (args.length != 8) {
+            System.err.println("Usage: S9ToastModes <rgb|timer|styled|stop> <base64-text|-> <sec> <pkg> <icon> <png|svg> <normal|bold|italic> <ARGB-signed>");
             System.exit(2);
         }
         try {
             String mode = args[0];
-            if (!mode.equals("rgb") && !mode.equals("timer") && !mode.equals("stop"))
+            if (!mode.equals("rgb") && !mode.equals("timer") && !mode.equals("styled") && !mode.equals("stop"))
                 throw new IllegalArgumentException("Bad mode");
             Class<?> looper = Class.forName("android.os.Looper");
             looper.getMethod("prepareMainLooper").invoke(null);
@@ -53,19 +53,24 @@ public final class S9ToastModes {
                 if (text.isEmpty()) throw new IllegalArgumentException("empty text");
                 int seconds = Integer.parseInt(args[2]);
                 if (seconds < 1 || seconds > 3600) throw new IllegalArgumentException("Duration: 1-3600s");
+                String style = args[6];
+                if (!style.matches("normal|bold|italic")) throw new IllegalArgumentException("bad style");
+                int color = Integer.parseInt(args[7]);
+                long countdownMs = seconds * 1000L;
+                long nativeDuration = countdownMs + (mode.equals("timer") ? 30_000L : 0L);
                 String pkg = args[3], icon = args[4], format = args[5];
                 if (!pkg.matches("[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z0-9_]+)*") ||
                     !icon.matches("[a-z][a-z0-9_]*") ||
                     !(format.equals("png") || format.equals("svg")))
                     throw new IllegalArgumentException("invalid icon resource");
                 String param = "{\"left\":{\"textParams\":{\"text\":\"" + json(text) +
-                    "\",\"textColor\":" + (mode.equals("timer") ? -16711936 : -1) + "}}," +
+                    "\",\"textColor\":" + color + "}}," +
                     "\"right\":{\"iconParams\":{\"category\":\"drawable\",\"iconFormat\":\"" +
                     format + "\",\"iconResName\":\"" + icon + "\",\"iconType\":1}}}";
                 put(bundle, "putString", String.class, "package_name", pkg);
                 put(bundle, "putString", String.class, "strong_toast_category", "text_bitmap");
                 put(bundle, "putString", String.class, "param", param);
-                put(bundle, "putLong", long.class, "duration", Long.valueOf(seconds * 1000L));
+                put(bundle, "putLong", long.class, "duration", Long.valueOf(nativeDuration));
                 put(bundle, "putFloat", float.class, "level", Float.valueOf(0f));
                 put(bundle, "putFloat", float.class, "rapid_rate", Float.valueOf(0f));
                 put(bundle, "putString", String.class, "charge", null);
@@ -73,9 +78,11 @@ public final class S9ToastModes {
                 put(bundle, "putParcelable", Class.forName("android.os.Parcelable"), "target", null);
                 // V0.5-only extra. Old SystemUI ignores it; Xposed consumes it.
                 put(bundle, "putString", String.class, "s9_mode", mode);
+                put(bundle, "putString", String.class, "s9_style", style);
+                put(bundle, "putLong", long.class, "s9_countdown_ms", Long.valueOf(countdownMs));
             }
             send(manager, bundle, bt);
-            System.out.println("Strong Toast " + mode + " request sent. V0.5 LSPosed module required for animation.");
+            System.out.println("Strong Toast " + mode + " request sent. V0.6 LSPosed module required for styles/animation.");
         } catch (Throwable e) {
             while (e instanceof InvocationTargetException &&
                    ((InvocationTargetException)e).getCause() != null)

@@ -1,42 +1,45 @@
 package com.s9encryptor.strongtoastextended;
 
+import android.animation.ObjectAnimator;
+import android.content.Context;
 import android.graphics.Color;
-import android.graphics.LinearGradient;
-import android.graphics.Matrix;
-import android.graphics.Shader;
+import android.graphics.Typeface;
 import android.os.Handler;
 import android.os.SystemClock;
-import android.widget.TextView;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.text.SpannableString;
+import android.text.TextPaint;
+import android.text.style.CharacterStyle;
+import android.text.style.UpdateAppearance;
 import android.view.View;
+import android.widget.TextView;
 import java.util.Locale;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
-/**
- * Runs entirely inside the existing com.android.systemui LSPosed process.
- * No su, no Termux polling, no text re-creation on every timer tick.
- * This class is intentionally independent of the V0.4 restoration state machine.
- */
+/** All visual updates happen on SystemUI's main Looper. No root polling. */
 final class StrongToastEffects {
     private static final String TAG = "[StrongToastEffects] ";
-    private static final long RGB_FRAME_MS = 65L;  // 15 FPS; affordable for SystemUI
-    private static final long TIMER_FRAME_MS = 180L; // 5.5 FPS: interpolate hue smoothly
-    private static final int[] RAINBOW = new int[] {
-        0xFFFF4141, 0xFFFFA632, 0xFFFFFF50, 0xFF54FF75,
-        0xFF44E8FF, 0xFF4786FF, 0xFFC556FF, 0xFFFF4141
-    };
+    private static final long RGB_FRAME_MS = 95L;
+    private static final long TIMER_FRAME_MS = 120L;
+    private static final long ALERT_MS = 30_000L;
+    private static final int MAX_RAINBOW_SEGMENTS = 90;
     private static Session session;
     private static int nextId = 1;
 
     private StrongToastEffects() {}
 
-    static void start(String mode, Object control, Handler handler, long deadlineElapsed) {
+    static void start(String mode, String style, long countdownMs,
+                      Object control, Handler handler, long deadlineElapsed) {
         stop();
-        if (!"rgb".equals(mode) && !"timer".equals(mode)) return;
-        final Session s = new Session(mode, control, handler, deadlineElapsed, nextId++);
+        if (!"rgb".equals(mode) && !"timer".equals(mode) && !"styled".equals(mode)) return;
+        Session s = new Session(mode, normalizeStyle(style), control, handler,
+            deadlineElapsed, countdownMs, nextId++);
         session = s;
         schedule(s, 140L);
-        XposedBridge.log(TAG + "Session started mode=" + mode + " deadline=" + deadlineElapsed);
+        XposedBridge.log(TAG + "started mode=" + mode + " style=" + s.style +
+            " countdownMs=" + countdownMs + " expiry=" + deadlineElapsed);
     }
 
     static void pause() {
@@ -45,7 +48,8 @@ final class StrongToastEffects {
         s.paused = true;
         if (s.frame != null) s.handler.removeCallbacks(s.frame);
         s.frame = null;
-        releaseShader(s);
+        s.view = null;
+        s.spans = null;
     }
 
     static void resume(Object control) {
@@ -53,11 +57,11 @@ final class StrongToastEffects {
         if (s == null) return;
         s.control = control;
         s.paused = false;
-        s.view = null; // Native Toast is a new TextView after replay.
-        s.gradient = null;
-        s.matrix = null;
+        s.view = null;
+        s.spans = null;
         s.previousSeconds = -1;
-        schedule(s, 220L);
+        s.previousColor = 0;
+        schedule(s, 200L);
     }
 
     static void stop() {
@@ -67,46 +71,78 @@ final class StrongToastEffects {
         s.paused = true;
         if (s.frame != null) s.handler.removeCallbacks(s.frame);
         s.frame = null;
-        releaseShader(s);
+        s.view = null;
+        s.spans = null;
+        stopOwnedVibration(s);
+    }
+
+    private static String normalizeStyle(String s) {
+        if ("bold".equalsIgnoreCase(s)) return "bold";
+        if ("italic".equalsIgnoreCase(s)) return "italic";
+        return "normal";
     }
 
     private static final class Session {
         final String mode;
+        final String style;
         Object control;
         final Handler handler;
+        final long createdAt;
         final long deadline;
-        final long startTime;
-        final long duration;
+        final long countdownEnd;
+        final long countdownDuration;
         final int id;
         TextView view;
-        LinearGradient gradient;
-        Matrix matrix;
         Runnable frame;
+        RainbowSpan[] spans;
+        boolean rainbowFallback;
+        float phase;
         int previousSeconds = -1;
-        int previousColor = 0;
+        int previousColor;
         boolean paused;
-        Session(String mode, Object control, Handler handler, long deadline, int id) {
+        boolean alertStarted;
+        boolean vibrating;
+        Vibrator vibrator;
+        ObjectAnimator shake;
+
+        Session(String mode, String style, Object control, Handler handler,
+                long deadline, long countdownMs, int id) {
             this.mode = mode;
+            this.style = style;
             this.control = control;
             this.handler = handler;
+            this.createdAt = SystemClock.elapsedRealtime();
             this.deadline = deadline;
-            this.startTime = SystemClock.elapsedRealtime();
-            this.duration = Math.max(1L, deadline - this.startTime);
+            this.countdownDuration = Math.max(1000L, countdownMs);
+            this.countdownEnd = "timer".equals(mode) ? Math.min(deadline, createdAt + this.countdownDuration) : deadline;
             this.id = id;
+        }
+    }
+
+    // Mutable CharacterStyle: setText once, then invalidate each frame. This
+    // avoids the GPU shader-local-matrix bug that left V0.5 stuck at red.
+    private static final class RainbowSpan extends CharacterStyle implements UpdateAppearance {
+        final Session owner;
+        final float offset;
+        RainbowSpan(Session owner, float offset) { this.owner = owner; this.offset = offset; }
+        @Override public void updateDrawState(TextPaint paint) {
+            float hue = (360f * (owner.phase + offset)) % 360f;
+            if (hue < 0f) hue += 360f;
+            paint.setShader(null);
+            paint.setColor(Color.HSVToColor(new float[]{hue, .95f, 1f}));
         }
     }
 
     private static void schedule(final Session s, long delayMs) {
         if (session != s || s.paused) return;
         if (s.frame != null) s.handler.removeCallbacks(s.frame);
-        final Runnable tick = new Runnable() {
+        Runnable tick = new Runnable() {
             @Override public void run() {
                 s.frame = null;
                 if (session != s || s.paused) return;
                 try { frame(s); }
-                catch (Throwable error) {
-                    XposedBridge.log(TAG + "effect frame error: " + error);
-                    // If the ROM's native TextView layout differs, don't crash SystemUI.
+                catch (Throwable e) {
+                    XposedBridge.log(TAG + "effect frame error (effects stopped safely): " + e);
                     pause();
                 }
             }
@@ -117,19 +153,26 @@ final class StrongToastEffects {
 
     private static void frame(Session s) {
         long now = SystemClock.elapsedRealtime();
-        long remaining = s.deadline - now;
-        if (remaining <= 0L) { stop(); return; }
+        if (now >= s.deadline) { stop(); return; }
+        if ("timer".equals(s.mode) && now >= s.countdownEnd && !s.alertStarted)
+            beginAlert(s);
         if (!bindView(s)) {
-            // Native dismiss is handled by V0.4 replay. Do not recreate here.
-            schedule(s, 350L);
+            schedule(s, 350L); // Restorer owns re-creation, not effects.
             return;
         }
         if ("rgb".equals(s.mode)) {
-            drawMovingRainbow(s, now);
+            updateRainbow(s, now);
             schedule(s, RGB_FRAME_MS);
+        } else if ("timer".equals(s.mode)) {
+            if (s.alertStarted) {
+                showTimeOver(s);
+                schedule(s, 250L);
+            } else {
+                drawCountdown(s, s.countdownEnd - now);
+                schedule(s, TIMER_FRAME_MS);
+            }
         } else {
-            drawCountdown(s, remaining);
-            schedule(s, TIMER_FRAME_MS);
+            // 'styled': no animation; hook replay calls resume() for new TextView.
         }
     }
 
@@ -140,74 +183,140 @@ final class StrongToastEffects {
                 !XposedHelpers.getBooleanField(toast, "mStrongToastShow")) return false;
             Object left = XposedHelpers.getObjectField(toast, "mLeftTextView");
             if (!(left instanceof TextView)) return false;
-            TextView v = (TextView) left;
-            if (s.view != v) {
-                releaseShader(s);
-                s.view = v;
-                s.gradient = null;
-                s.matrix = null;
+            TextView view = (TextView) left;
+            if (s.view != view) {
+                s.view = view;
+                s.spans = null;
+                s.rainbowFallback = false;
                 s.previousSeconds = -1;
                 s.previousColor = 0;
-                XposedBridge.log(TAG + "Bound " + s.mode + " to native TextView");
+                setStyle(view, s.style);
+                if ("rgb".equals(s.mode)) installRainbow(s);
+                XposedBridge.log(TAG + "bound mode=" + s.mode + " style=" + s.style);
             }
             return true;
         } catch (Throwable ignored) { return false; }
     }
 
-    private static void drawMovingRainbow(Session s, long now) {
+    private static void setStyle(TextView view, String style) {
+        int mode = Typeface.NORMAL;
+        if ("bold".equals(style)) mode = Typeface.BOLD;
+        else if ("italic".equals(style)) mode = Typeface.ITALIC;
+        view.setTypeface(view.getTypeface(), mode);
+    }
+
+    private static void installRainbow(Session s) {
         TextView v = s.view;
         if (v == null) return;
-        if (s.gradient == null) {
-            // One color cycle over the visible status width; repeated in long texts.
-            int width = Math.max(v.getWidth(), 260);
-            s.gradient = new LinearGradient(0, 0, width, 0, RAINBOW, null, Shader.TileMode.REPEAT);
-            s.matrix = new Matrix();
-            v.getPaint().setShader(s.gradient);
+        try {
+            String value = v.getText().toString();
+            int codepoints = value.codePointCount(0, value.length());
+            if (codepoints == 0) return;
+            int segments = Math.min(MAX_RAINBOW_SEGMENTS, codepoints);
+            SpannableString colored = new SpannableString(value);
+            RainbowSpan[] newSpans = new RainbowSpan[segments];
+            for (int i = 0; i < segments; i++) {
+                int from = value.offsetByCodePoints(0, (i * codepoints) / segments);
+                int to = value.offsetByCodePoints(0, ((i + 1) * codepoints) / segments);
+                if (to <= from) continue;
+                RainbowSpan span = new RainbowSpan(s, (float)i / (float)segments);
+                newSpans[i] = span;
+                colored.setSpan(span, from, to, 33); // Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            }
+            v.getPaint().setShader(null);
+            v.setText(colored, TextView.BufferType.SPANNABLE);
+            s.spans = newSpans;
+            XposedBridge.log(TAG + "Rainbow spans installed count=" + segments);
+        } catch (Throwable e) {
+            s.rainbowFallback = true;
+            XposedBridge.log(TAG + "Rainbow spans failed; hue-cycling fallback: " + e);
         }
-        float period = Math.max(260, v.getWidth());
-        float phase = ((now - s.startTime) % 9_000L) / 9_000f;
-        s.matrix.setTranslate(phase * period, 0f);
-        s.gradient.setLocalMatrix(s.matrix);
-        v.invalidate();
+    }
+
+    private static void updateRainbow(Session s, long now) {
+        if (s.view == null) return;
+        s.phase = ((now - s.createdAt) % 6200L) / 6200f;
+        if (s.rainbowFallback || s.spans == null) {
+            // Visible fallback if the ROM rejects colored CharacterStyle spans.
+            s.view.setTextColor(Color.HSVToColor(new float[]{360f * s.phase, 1f, 1f}));
+        }
+        s.view.invalidate();
     }
 
     private static void drawCountdown(Session s, long remainingMs) {
-        TextView v = s.view;
-        if (v == null) return;
-        // ceil: exactly 30m -> 30:00, one second later -> 29:59
-        int seconds = (int) Math.max(0L, (remainingMs + 999L) / 1_000L);
+        if (s.view == null) return;
+        int seconds = (int)Math.max(0L, (remainingMs + 999L) / 1000L);
         if (s.previousSeconds != seconds) {
             s.previousSeconds = seconds;
-            int minutes = seconds / 60;
-            int leftover = seconds % 60;
-            v.setText(String.format(Locale.US, "Remaining %02d:%02d", minutes, leftover));
+            s.view.setText(String.format(Locale.US, "Remaining %02d:%02d", seconds/60, seconds%60));
         }
-        float r = Math.max(0f, Math.min(1f, remainingMs / (float) s.duration));
+        float fraction = Math.max(0f, Math.min(1f, remainingMs / (float)s.countdownDuration));
+        // Smooth threshold transitions: green -> orange near 33%, orange -> red near 15%.
         float hue;
-        if (r >= .35f) hue = 122f;
-        else if (r > .33f) hue = smoothHue(r, .35f, .33f, 122f, 30f);
-        else if (r >= .17f) hue = 30f;
-        else if (r > .15f) hue = smoothHue(r, .17f, .15f, 30f, 0f);
+        if (fraction >= .40f) hue = 120f;
+        else if (fraction > .33f) hue = smoothHue(fraction, .40f, .33f, 120f, 30f);
+        else if (fraction >= .21f) hue = 30f;
+        else if (fraction > .15f) hue = smoothHue(fraction, .21f, .15f, 30f, 0f);
         else hue = 0f;
-        int color = Color.HSVToColor(new float[] { hue, 1f, 1f });
-        if (s.previousColor != color) {
-            s.previousColor = color;
-            v.setTextColor(color);
+        int color = Color.HSVToColor(new float[]{hue, 1f, 1f});
+        if (color != s.previousColor) { s.previousColor = color; s.view.setTextColor(color); }
+    }
+
+    private static float smoothHue(float ratio, float high, float low, float from, float to) {
+        float t = Math.max(0f, Math.min(1f, (high - ratio)/(high - low)));
+        t = t*t*(3f-2f*t);
+        return from + (to-from)*t;
+    }
+
+    private static void beginAlert(Session s) {
+        if (s.alertStarted) return;
+        s.alertStarted = true;
+        s.previousSeconds = -1;
+        XposedBridge.log(TAG + "Timer expired. Start Time over! + 30s vibration");
+        try {
+            Object toast = XposedHelpers.getObjectField(s.control, "mMiuiStrongToastCallBack");
+            Context context = toast instanceof View ? ((View)toast).getContext() : null;
+            if (context != null) {
+                Vibrator vib = (Vibrator)context.getSystemService(Context.VIBRATOR_SERVICE);
+                if (vib != null && vib.hasVibrator()) {
+                    s.vibrator = vib;
+                    long time = Math.min(ALERT_MS, Math.max(1000L, s.deadline - SystemClock.elapsedRealtime()));
+                    vib.vibrate(VibrationEffect.createOneShot(time, VibrationEffect.DEFAULT_AMPLITUDE));
+                    s.vibrating = true;
+                }
+            }
+        } catch (Throwable e) {
+            XposedBridge.log(TAG + "Vibration unavailable (permission/DND/ROM): " + e);
         }
     }
 
-    private static float smoothHue(float remainingRatio, float high, float low,
-                                   float hueFrom, float hueTo) {
-        float p = (high - remainingRatio) / (high - low);
-        p = Math.max(0f, Math.min(1f, p));
-        p = p * p * (3f - 2f * p);  // smoothstep
-        return hueFrom + (hueTo - hueFrom) * p;
+    private static void showTimeOver(Session s) {
+        TextView v = s.view;
+        if (v == null) return;
+        if (!"Time over!".contentEquals(v.getText())) {
+            v.setText("Time over!");
+            v.setTextColor(Color.RED);
+            shake(v, s);
+        }
     }
 
-    private static void releaseShader(Session s) {
-        if (s.view != null && s.gradient != null) {
-            try { s.view.getPaint().setShader(null); s.view.invalidate(); }
-            catch (Throwable ignored) {}
+    private static void shake(TextView v, Session s) {
+        if (s.shake != null) { try { s.shake.cancel(); } catch (Throwable ignored) { } }
+        try {
+            float d = v.getResources().getDisplayMetrics().density;
+            float x = 9f * d;
+            s.shake = ObjectAnimator.ofFloat(v, View.TRANSLATION_X,
+                0f, -x, x, -x*.8f, x*.8f, -x*.5f, x*.5f, 0f);
+            s.shake.setDuration(1100L);
+            s.shake.start();
+        } catch (Throwable e) { XposedBridge.log(TAG + "shake unavailable: " + e); }
+    }
+
+    private static void stopOwnedVibration(Session s) {
+        if (s.shake != null) { try { s.shake.cancel(); } catch (Throwable ignored) {} s.shake = null; }
+        if (s.vibrating && s.vibrator != null) {
+            try { s.vibrator.cancel(); } catch (Throwable ignored) {}
         }
+        s.vibrating = false;
     }
 }

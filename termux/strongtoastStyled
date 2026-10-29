@@ -1,0 +1,28 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+seconds=1800; style=normal; color='#0BFC03'
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d) [[ $# -ge 2 ]] || exit 2; seconds=$2; shift 2 ;;
+    -s|--style) [[ $# -ge 2 ]] || exit 2; style=${2,,}; shift 2 ;;
+    -c|--color) [[ $# -ge 2 ]] || exit 2; color=$2; shift 2 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+[[ $seconds =~ ^[0-9]{1,4}$ ]] || { echo 'Invalid seconds' >&2; exit 2; }
+seconds=$((10#$seconds))
+((seconds>=1 && seconds<=3600)) || { echo 'Seconds must be 1..3600' >&2; exit 2; }
+[[ $style =~ ^(normal|bold|italic)$ ]] || { echo 'Style must be normal, bold, italic' >&2; exit 2; }
+hex=${color#\#}; hex=${hex^^}
+case "$hex" in
+  GREEN) hex=0BFC03 ;;
+  RED) hex=FF4141 ;;
+  BLUE) hex=4488FF ;;
+  WHITE) hex=FFFFFF ;;
+esac
+[[ $hex =~ ^[0-9A-F]{6}$ ]] || { echo 'Color must be #RRGGBB or green/red/blue/white' >&2; exit 2; }
+(( $# > 0 )) || { echo 'Usage: strongtoastStyled [-d secs] [-s style] [-c #RRGGBB] "text"' >&2; exit 2; }
+color_num=$((16#FF$hex))
+(( color_num >= 2147483648 )) && color_num=$((color_num-4294967296))
+exec "${PREFIX}/bin/s9-toast-client" styled "$seconds" "$*" "$style" "$color_num"
