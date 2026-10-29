@@ -1,35 +1,65 @@
-# StrongToast Extended V0.7 — short bold/italic text truncation fix
+# StrongToast Extended
 
-This is a **targeted patch to V0.6**. The supplied release notes describe normal `S9_Encryptor` fitting while bold RGB renders as `S9_Encryp..` despite spare area beside the icon. That device behavior has not been independently verified here.
+One native Android APK containing a Kotlin/Jetpack Compose control app and the existing legacy LSPosed module for Xiaomi HyperOS SystemUI. Application ID: `com.s9encryptor.strongtoastextended`; version **1.0.3 (103)**. This continues the V0.7 project in the same package.
 
-## Fix
+## Install and update
 
-- For **short** (up to 26 Unicode codepoints) bold/italic text only, measure actual text `TextPaint.measureText` against the native TextView width, minus compound padding.
-- If it overflows, first try actual **sans-serif-condensed bold/italic** without losing styling. If needed, fit font size down by at most about 22%. This avoids changing the right-hand HyperCeiler icon, touch region, or XML constraints.
-- Normal text and longer lines keep the original native behavior, including marquee. RGB spans and color animation are unchanged. Timer mode also uses the fit check to reduce bold/italic timer truncation.
-- Existing v0.6 behavior is retained: strongtoastRGB, strongtoastStyled, toastTimer and stopToastTimer, 65-minute watchdog, shade recovery and `Time over!` vibration. The original `strongtoast` binary/DEX stays untouched.
+1. Download `StrongToast-Extended-unsigned` from the latest successful [native app build](https://github.com/0mdmiraj1-dev/toast-module/actions?query=branch%3Aapk-build%2Fnative-app). Extract the artifact ZIP.
+2. **Sign `app-release-unsigned.apk` with your existing module's private signing key.** The delivered release is deliberately unsigned. Updating an installed package requires the same signing certificate; the package ID alone does not preserve update compatibility.
+3. Install the signed APK as an update. In LSPosed, enable **StrongToast Extended** and select **System UI (`com.android.systemui`) only**. Reboot after installing or updating hook code.
+4. Open the app. Refresh to check the System UI connection. On the first Start or root-access action, approve the normal Magisk superuser prompt. Denial is handled without repeated automatic requests.
+5. Use the Editor or Timer to start a status. The app can then be closed; SystemUI manages effects, countdown and recovery.
 
-## Build/update
+The target is a rooted Xiaomi/Poco running Android 13 with compatible HyperOS Strong Toast classes and legacy LSPosed API 82. Private ROM APIs differ across firmware: an unsupported feature is reported through diagnostics. No SystemUI APK patching, Termux installation, permanent root daemon, companion app or foreground service is required.
 
-The existing project retains its `applicationId`, build setup, `xposed_init`, and System UI-only LSPosed scope. The app source changes are:
+## Native controls
 
-- `app/src/main/java/com/s9encryptor/strongtoastextended/StrongToastEffects.java`
-- `app/src/main/java/com/s9encryptor/strongtoastextended/StrongToastHook.java` (version log only)
-- `app/build.gradle` (version 0.7)
+- **Dashboard:** live preview, acknowledged active state, remaining time, color mode, Start/Update/Stop, connection status and recent presets.
+- **Status editor:** Unicode/emojis, custom HEX color (with or without `#`), Normal/Bold/Italic, solid or animated rainbow, minute/second duration up to 60 minutes, icon selection and preset saving.
+- **Countdown:** a single start request; SystemUI updates `Remaining MM:SS` once per second using elapsed time. Colors blend from green through orange to red. Completion shows `Time over!` for up to 30 seconds, with optional short shake and vibration. Stop cancels the alert.
+- **Presets:** save, edit, rename, activate and delete complete styles, stored locally with DataStore.
+- **Settings:** dark/light/system theme, defaults, automatic restoration, reduced motion, effects safety toggle, timer alerts, connection status and expandable diagnostics.
 
-An in-place update requires the same signing certificate as the installed APK. The current GitHub workflow creates a fresh debug key per runner, and the previous key was not retained, so this APK cannot directly update an earlier GitHub build. Use an original matching signing configuration when available. Reboot when testing the module. Existing V0.6 Termux helpers are retained.
+HyperCeiler's `com.sevtinge.hyperceiler:drawable/ic_hyperceiler` is supported. A packaged PNG is used if its package or drawable is missing. Package detection uses Android APIs rather than shell package-manager commands.
 
-## Verify
+## Preserved behavior and fixes
 
-```sh
-strongtoastStyled -s normal -c '#0BFC03' -d 40 'S9_Encryptor'
-strongtoastStyled -s bold -c '#0BFC03' -d 40 'S9_Encryptor'
-strongtoastRGB -s bold -d 120 'S9_Encryptor'
-strongtoastRGB -s italic -d 120 'S9_Encryptor'
-```
+The V0.7 native show/hide/watchdog and panel hooks remain in place. Clicking the right icon dismisses the status; recovery waits approximately five seconds if no panel is open, or until Notification Panel/Control Center closes. Long panel sessions retain the original deadline and settings. Explicit Stop, expiry and stale request generations cancel recovery. Retry failures have a finite budget.
 
-Look for `[StrongToastEffects] short text fit completed` in LSPosed log when bold/italic is measured too wide. The example should no longer show `..` if its length can fit within the native TextView with modest font adjustment.
+The text fix measures the styled native TextView, glyph overhang and actual space before the right icon. It adjusts bounded internal layout width/padding without adding trailing whitespace or shrinking the font. Fitting text loses unnecessary ellipsis; long text retains native marquee. Layout listeners coalesce changes and are cleaned up with the session.
 
-**Limitations:** this intentionally does not expand the native text container because changing Xiaomi's icon layout and touch hitboxes may break SystemUI. On certain ROM builds or extra-wide fonts, very long text may still ellipsize or marquee. The repository build uses the actual Android SDK, Gradle, lint, and APK signature verification. Device runtime remains untested; keep a working APK for rollback.
+Commands use a signature-protected SystemUI receiver with private Binder-backed replies, validation, request IDs and sequence fencing. A build-generated Java/DEX bootstrap uses an authorized, bounded root session only when the native controller needs preparation. User text never becomes shell source. Successful root execution is not presented as proof of visible rendering.
 
-The fit calculation uses the first non-zero measured width, which can still be an intermediate entrance-animation width. It does not restore the prior text size/typeface: if firmware reuses a native TextView without resetting those properties, later text may inherit the fitted font or size. Existing timer-alert limitations remain: expiry effects paused during dismissal can be delayed or skipped if the original alert window ends before restoration.
+Screen-off time counts toward original elapsed deadlines. SystemUI process death ends the in-memory session; the app reconnects and reports state, without silently restarting an expired timer. Vibration remains subject to device policy and DND. Reduced motion keeps rainbow static and suppresses shake.
+
+## Build and verification
+
+Open the root directory in Android Studio, sync Gradle and select the release variant. See [BUILDING.md](BUILDING.md) for exact SDK/JDK versions, Gradle commands and signing instructions. The GitHub workflow runs unit/native Android tests, release lint, release assembly and APK contents/integrity checks, then uploads the unsigned APK and reports.
+
+Host tests cover validation, real DataStore preset CRUD, MVVM races, command permissions/order, native font/layout regressions, app control bindings, timer cleanup and restoration. The complete preset dialog interaction is retained as an Android instrumentation test; the host runner did not become idle for that separate dialog window, so a dialog pass is not claimed. They use Robolectric and test-only transports; they do not execute Magisk or emulate Xiaomi firmware. **Real target-phone validation remains required:** use [the test checklist](docs/TEST_CHECKLIST.md). No real-device pass is claimed.
+
+[Migration notes](docs/MIGRATION.md) explain the replaced Termux components. [Dependency audit](docs/DEPENDENCY_AUDIT.md) records the V0.7 baseline. The retained `termux/` directory is historical source, not an application dependency.
+
+If needed, turn off Enhanced effects in Settings, press Stop, or disable the module in LSPosed and reboot. Keep your known-working signed APK for rollback; Android may require uninstalling before installing a lower version code.
+
+## 1.0.3 native rainbow and marquee
+
+The native TextView now receives an appearance-span notification across the full text on each rainbow frame, so cached text rendering is invalidated without replacing the text buffer or restarting marquee. If firmware replaces the text on the same view, rainbow spans are installed again. Reduced motion and Stop cancel animation updates.
+
+Overflowing text gets a bounded viewport, single-line horizontal scrolling, infinite native marquee and selected state. It no longer restores a firmware END-ellipsis configuration when text exceeds the available width. Fitting text retains measured glyph-overhang padding and no ellipsis; the right icon remains outside the text viewport. Reconciliation also detects firmware changes to ellipsize/selection on an otherwise unchanged view. Original view settings are restored on cleanup.
+
+Host regressions include `My name is S9_Encryptor` in Normal/Bold/Italic at fitting and overflowing widths, firmware resets, text replacement, appearance notifications without per-frame setText, reduced motion and Stop. The reported V1.0.2 native rendering problem requires retesting on the target phone with this update; the Compose preview is not native rendering evidence. Sign, install, reboot to reload SystemUI hooks, then test Start and long-text scrolling.
+
+## 1.0.2 cross-process callback fix
+
+The supplied Android 13 device logs identify the failed connection: SystemUI received the command, but Android could not unmarshal the app's anonymous `ModuleClient` ResultReceiver subclass. The callback failed before a reply could be sent. An enabled LSPosed scope and granted root were not the cause of this error.
+
+All command and unsubscribe callbacks now pass through `ResultReceiver.CREATOR` before entering an Intent. Only the framework class name and its private Binder endpoint cross the process boundary; the local callback implementation stays in the app. Signature permission, private callbacks, request IDs and sequence checks remain enforced. Regression transports parcel the complete Intent with a loader that rejects app classes, including subscription updates and unsubscribe. The previous host test decoded extras with the app loader too early and did not model this failure.
+
+Sign the unsigned APK with the existing certificate, install the update, reboot, and Refresh. Check that System UI connects, then test Start/Update/Stop and reopening the app. This release addresses the exception observed in the logs; successful operation on the target phone still needs verification.
+
+## 1.0.1 connection diagnostics
+
+The headless root helper no longer invokes `ActivityThread.systemMain()` (which initializes Xiaomi graphics/performance services); root authorization does not create a framework Context. SystemUI receiver registration starts before Application onCreate and can recover from a captured native controller Context. Commands request foreground broadcast scheduling and diagnostics record whether the app actually holds its control permission. Signature permission enforcement remains unchanged.
+
+After updating the signed APK, reboot before checking connection. Root UID 0 and an enabled LSPosed scope do not establish that the new hook code is loaded. If disconnected, provide the LSPosed module log lines containing StrongToast, including receiver registration or hook-load errors. The reported ENOENT framework traces followed by UID 0 were not proof of root denial. Target-phone connection remains to be rechecked.
