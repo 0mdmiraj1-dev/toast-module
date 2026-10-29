@@ -131,7 +131,7 @@ final class StrongToastBridge {
                     BroadcastReceiver deadlines = new BroadcastReceiver() {
                         @Override public void onReceive(Context c, Intent i) {
                             if (Intent.ACTION_SCREEN_ON.equals(i.getAction()) || Intent.ACTION_USER_PRESENT.equals(i.getAction())) {
-                                StrongToastHook.checkElapsedDeadline(); StrongToastEffects.onScreenWake(); publish();
+                                StrongToastHook.onScreenWake(); publish();
                             }
                         }
                     };

@@ -72,6 +72,15 @@ final class StrongToastEffects {
         if (s == null) return;
         long now = SystemClock.elapsedRealtime();
         if (now >= s.deadline) { StrongToastHook.checkElapsedDeadline(); stop(); return; }
+        if (s.expiry != null) {
+            s.handler.removeCallbacks(s.expiry);
+            s.handler.postDelayed(s.expiry, Math.max(1L, s.deadline - now));
+        }
+        if (s.alert != null) {
+            s.handler.removeCallbacks(s.alert);
+            if (!s.alertStarted && now < s.countdownEnd)
+                s.handler.postDelayed(s.alert, Math.max(1L, s.countdownEnd - now));
+        }
         if ("timer".equals(s.mode) && now >= s.countdownEnd && !s.alertStarted) beginAlert(s);
         if (!s.paused) schedule(s, 1L);
     }

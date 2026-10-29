@@ -91,12 +91,19 @@ public class RecoveryRegressionTest {
         long uptime=SystemClock.uptimeMillis();
         org.robolectric.shadows.ShadowSystemClock.simulateDeepSleep(Duration.ofSeconds(5));
         assertEquals(uptime,SystemClock.uptimeMillis());
-        StrongToastEffects.onScreenWake();
+        StrongToastHook.onScreenWake();
         Field f=StrongToastEffects.class.getDeclaredField("session");f.setAccessible(true);Object session=f.get(null);
         assertNotNull(session);Field alert=session.getClass().getDeclaredField("alertStarted");alert.setAccessible(true);
         assertTrue(alert.getBoolean(session));
-        org.robolectric.shadows.ShadowSystemClock.simulateDeepSleep(Duration.ofSeconds(30));
-        StrongToastEffects.onScreenWake();assertNull(f.get(null));assertNull(get("saved"));
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(26));
+        assertNull(f.get(null));assertNull(get("saved"));assertEquals(1,control.hides);
+    }
+    @Test public void wakeAfterOriginalExpiryHidesWithoutRestartingTheStatus() throws Exception {
+        set("expiresAt",SystemClock.elapsedRealtime()+1000L);
+        call("scheduleFinalExpiry",new Class[]{});
+        org.robolectric.shadows.ShadowSystemClock.simulateDeepSleep(Duration.ofSeconds(5));
+        StrongToastHook.onScreenWake();
+        assertNull(get("saved"));assertEquals(1,control.hides);assertEquals(0,control.starts);
     }
     private static void set(String key,Object value)throws Exception{Field f=StrongToastHook.class.getDeclaredField(key);f.setAccessible(true);f.set(null,value);}
     private static Object get(String key)throws Exception{Field f=StrongToastHook.class.getDeclaredField(key);f.setAccessible(true);return f.get(null);}

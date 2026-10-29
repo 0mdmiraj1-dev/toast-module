@@ -441,7 +441,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
         final int expected = generation;
         finalExpiry = new Runnable() { @Override public void run() {
             if (saved == null || generation != expected) return;
-            if (expired()) clearCache("independent final expiry");
+            if (expired()) checkElapsedDeadline();
             else scheduleFinalExpiry();
         }};
         main.postDelayed(finalExpiry, Math.max(1L, expiresAt - SystemClock.elapsedRealtime()));
@@ -516,6 +516,12 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
         Object control = toastControl != null ? toastControl : StrongToastBridge.controller();
         try { stopFromBridge(control); }
         catch (Throwable error) { log("elapsed deadline native hide unavailable", error); }
+    }
+
+    static void onScreenWake() {
+        checkElapsedDeadline();
+        if (saved != null) scheduleFinalExpiry();
+        StrongToastEffects.onScreenWake();
     }
 
     static Bundle currentRequestCopy() { return saved == null ? null : new Bundle(saved); }
