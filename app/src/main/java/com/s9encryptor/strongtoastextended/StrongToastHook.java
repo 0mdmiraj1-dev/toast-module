@@ -13,7 +13,7 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * HyperOS 1 / Android 13 LSPosed SystemUI-only module.
+ * HyperOS 1 / Android 13 LSPosed SystemUI-only module (V0.5).
  *
  * 1) Keep the proven 65-minute independent onAttachedToWindow() watchdog hook.
  * 2) Capture long text_bitmap Strong Toasts (61-3600 seconds).
@@ -22,6 +22,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 4) When a panel opens, keep a low-overhead deferred native state check until it closes.
  * 5) If the toast was manually dismissed but no panel is opened, retry after 5s.
  * 6) Restore only the REMAINING duration (clock: elapsedRealtime), without su.
+ * 7) Optional on-device RGB rainbow text and 1-second countdown effects.
  *
  * All mutable state is confined to SystemUI's main looper. Does not
  * intercept external arbitrary notifications or make the toast non-dismissible.
@@ -56,7 +57,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
         installNativeHideEvents(param.classLoader);
         installShadeEvents(param.classLoader);
         installControlCenterEvents(param.classLoader);
-        XposedBridge.log(TAG + "V0.4 ready (native dismiss + persistent shade state recovery)");
+        XposedBridge.log(TAG + "V0.5 ready (V0.4 recovery + optional RGB/timer effects)");
     }
 
     private static void onMain(Runnable action) {
@@ -99,14 +100,18 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
                                 long duration = request.getLong("duration", 0L);
                                 // Do not replay a different app's old toast over a new request.
                                 if (saved != null) clearCache("replaced by another request");
+                                String effect = request.getString("s9_mode", "");
+                                boolean effectMode = "rgb".equals(effect) || "timer".equals(effect);
                                 if (!"text_bitmap".equals(category) || pkg.isEmpty() ||
-                                    duration <= MIN_STICKY_MS || duration > MAX_STICKY_MS) return;
+                                    duration < (effectMode ? 1_000L : MIN_STICKY_MS + 1L) ||
+                                    duration > MAX_STICKY_MS) return;
                                 saved = new Bundle(request);
                                 toastControl = control;
                                 expiresAt = SystemClock.elapsedRealtime() + duration;
                                 nativeDismissed = false;
                                 generation++;
-                                XposedBridge.log(TAG + "Captured long toast durationMs=" + duration);
+                                XposedBridge.log(TAG + "Captured toast durationMs=" + duration + " effect=" + effect);
+                                StrongToastEffects.start(effect, control, main, expiresAt);
                             }
                         });
                     }
@@ -156,6 +161,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
             if (!currentNativeToastIs(toast)) return;
             if (expired()) { clearCache("duration complete"); return; }
             nativeDismissed = true;
+            StrongToastEffects.pause();
             XposedBridge.log(TAG + "Native toast dismissed: " + reason);
             // The user must tap the icon first, then pull down the panel.
             // Allow 5 seconds for the gesture instead of instantly blocking it.
@@ -337,6 +343,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
             XposedHelpers.callMethod(toastControl, "showCustomStrongToast", replayRequest);
             nativeDismissed = false;
             XposedBridge.log(TAG + "Restore sent. RemainingMs=" + remainingMs);
+            StrongToastEffects.resume(toastControl);
         } catch (Throwable e) {
             log("restore failed", e);
             // A transient SystemUI race must not permanently abandon recovery.
@@ -354,6 +361,7 @@ public final class StrongToastHook implements IXposedHookLoadPackage {
 
     private static void clearCache(String reason) {
         cancelPending();
+        StrongToastEffects.stop();
         saved = null;
         toastControl = null;
         expiresAt = 0L;

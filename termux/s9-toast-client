@@ -1,0 +1,24 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+mode=${1:?mode}
+seconds=${2:?duration}
+msg=${3-}
+case "$mode" in
+  rgb|timer|stop) ;;
+  *) echo 'Mode must be rgb, timer, or stop' >&2; exit 2 ;;
+esac
+[[ "$seconds" =~ ^[0-9]{1,4}$ ]] || { echo 'Invalid duration' >&2; exit 2; }
+seconds=$((10#$seconds))
+if [[ "$mode" == stop ]]; then
+  (( seconds == 0 )) || { echo 'Stop duration must be 0' >&2; exit 2; }
+else
+  (( seconds >= 1 && seconds <= 3600 )) || { echo 'Duration must be 1..3600 seconds' >&2; exit 2; }
+fi
+conf="$HOME/.strongtoast-modes/icon.conf"
+[[ -f "$conf" ]] || { echo 'Missing icon config; rerun install_modes.sh' >&2; exit 1; }
+# shellcheck source=/dev/null
+source "$conf"
+[[ $ICON_PACKAGE =~ ^[a-zA-Z][a-zA-Z0-9_.]*$ && $ICON_NAME =~ ^[a-z][a-z0-9_]*$ && $ICON_FORMAT =~ ^(png|svg)$ ]] || exit 2
+encoded=$(printf '%s' "$msg" | base64 | tr -d '\n\r')
+# Values are limited to safe alphabets; user text is Base64-encoded.
+su -c "CLASSPATH=/data/local/tmp/s9-toast-modes/classes.dex /system/bin/app_process /system/bin S9ToastModes '$mode' '$encoded' '$seconds' '$ICON_PACKAGE' '$ICON_NAME' '$ICON_FORMAT'" 2>"$HOME/.strongtoast-modes/last-error.log"

@@ -1,0 +1,7 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+[[ $# == 1 && "$1" =~ ^[0-9]{1,2}$ ]] || { echo 'Usage: toastTimer <minutes 1..60>' >&2; exit 2; }
+minutes=$((10#$1))
+((minutes >= 1 && minutes <= 60)) || { echo 'Minutes must be 1..60' >&2; exit 2; }
+printf -v label 'Remaining %02d:00' "$minutes"
+exec "${PREFIX}/bin/s9-toast-client" timer "$((minutes * 60))" "$label"

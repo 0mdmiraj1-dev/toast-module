@@ -1,0 +1,4 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+# Native hide command hides CURRENT Strong Toast, including RGB, if one is present.
+exec "${PREFIX}/bin/s9-toast-client" stop 0 '-'
