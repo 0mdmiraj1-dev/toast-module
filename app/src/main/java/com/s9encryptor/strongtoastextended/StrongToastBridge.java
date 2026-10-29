@@ -142,7 +142,8 @@ final class StrongToastBridge {
                     else context.registerReceiver(deadlines, wake, null, main);
                 } catch (Throwable ignored) { }
                 capability("receiver", true);
-                XposedBridge.log(TAG + "Protected receiver registered for " + context.getPackageName());
+                try { XposedBridge.log(TAG + "Protected receiver registered for " + context.getPackageName()); }
+                catch (Throwable ignored) { /* Diagnostic logging cannot disable a registered receiver. */ }
                 publish();
             } catch (Throwable error) { report("Protected command receiver unavailable", error); }
         });
